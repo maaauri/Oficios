@@ -1,0 +1,33 @@
+{
+   "watch_dir": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/Evidencia",
+  "excel_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/oficios.xlsx",
+  "processed_state_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/processed_state.json",
+  "log_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/oficios_service.log",
+  "timezone": "America/Santiago",
+  "run_time": "16:00",
+  "openai_api_key": "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",
+  "model": "gpt-5.4-nano",
+  "request_timeout_seconds": 180,
+  "gerentes": {
+    "PMGD": {
+      "nombre": "REEMPLAZAR NOMBRE PMGD",
+      "email": ""
+    },
+    "Conexiones": {
+      "nombre": "REEMPLAZAR NOMBRE CONEXIONES",
+      "email": ""
+    },
+    "Lectura": {
+      "nombre": "REEMPLAZAR NOMBRE LECTURA",
+      "email": ""
+    },
+    "Servicio al Cliente": {
+      "nombre": "REEMPLAZAR NOMBRE SERVICIO AL CLIENTE",
+      "email": ""
+    },
+    "Cobranza": {
+      "nombre": "REEMPLAZAR NOMBRE COBRANZA",
+      "email": ""
+    }
+  }
+}
