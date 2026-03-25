@@ -511,7 +511,11 @@ def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
         if not _VALID_PREFIXES.match(path.name):
             logging.info("Omitido (no inicia con OC, Ord. o RE): %s", path.name)
             continue
-        file_hash = sha256_file(path)
+        try:
+            file_hash = sha256_file(path)
+        except OSError as exc:
+            logging.warning("Omitido (no se pudo leer, puede estar solo en la nube): %s — %s", path.name, exc)
+            continue
         if file_hash in processed_hashes:
             logging.info("Omitido (ya fue procesado anteriormente): %s", path.name)
             continue
