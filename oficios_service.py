@@ -370,9 +370,9 @@ def call_openai_extract(config: Config, pdf_path: Path) -> dict[str, Any]:
     )
 
     if not response.ok:
-    	logging.error("OpenAI devolvió %s: %s", response.status_code, response.text)
-    	response.raise_for_status()
-    
+        logging.error("OpenAI devolvió %s: %s", response.status_code, response.text)
+        response.raise_for_status()
+
     data = response.json()
 
     output_text = extract_output_text(data)
