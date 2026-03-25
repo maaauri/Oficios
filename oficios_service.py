@@ -502,13 +502,20 @@ def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
 
     pdfs: List[Path] = []
     for path in sorted(config.watch_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in config.scan_extensions:
-            if not _VALID_PREFIXES.match(path.name):
-                logging.info("Se omite archivo sin prefijo válido (OC/Ord./RE): %s", path.name)
-                continue
-            file_hash = sha256_file(path)
-            if file_hash not in processed_hashes:
-                pdfs.append(path)
+        if not path.is_file():
+            logging.info("Omitido (no es archivo): %s", path.name)
+            continue
+        if path.suffix.lower() not in config.scan_extensions:
+            logging.info("Omitido (extensión no es PDF): %s", path.name)
+            continue
+        if not _VALID_PREFIXES.match(path.name):
+            logging.info("Omitido (no inicia con OC, Ord. o RE): %s", path.name)
+            continue
+        file_hash = sha256_file(path)
+        if file_hash in processed_hashes:
+            logging.info("Omitido (ya fue procesado anteriormente): %s", path.name)
+            continue
+        pdfs.append(path)
     return pdfs
 
 
