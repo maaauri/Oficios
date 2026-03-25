@@ -625,6 +625,12 @@ def run_once(config: Config) -> None:
     process_directory(config, state)
 
 
+def reset_state(config: Config) -> None:
+    state = {"processed_hashes": [], "last_run_date": None}
+    save_state(config.processed_state_path, state)
+    logging.info("Estado reseteado. Se reprocesarán todos los PDFs en la próxima ejecución.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Procesa PDFs de oficios y llena un Excel usando OpenAI API.")
     parser.add_argument("--config", default="config.json", help="Ruta al archivo de configuración JSON.")
@@ -634,6 +640,11 @@ def main() -> None:
         action="store_true",
         help="Crea solo la plantilla Excel definida en config.json y termina.",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Resetea la memoria de PDFs procesados para que se vuelvan a analizar.",
+    )
     args = parser.parse_args()
 
     config = load_config(Path(args.config))
@@ -642,6 +653,10 @@ def main() -> None:
     if args.create_template:
         create_excel_template(config.excel_path)
         logging.info("Plantilla creada: %s", config.excel_path)
+        return
+
+    if args.reset:
+        reset_state(config)
         return
 
     if args.run_once:
