@@ -41,7 +41,7 @@ SCHEMA = {
         "numero_oficio": {"type": ["string", "null"]},
         "categoria": {
             "type": ["string", "null"],
-            "enum": ["Resolución exenta", "Oficio ordinario", "Oficio circular", "Multa", "Otro", None],
+            "enum": ["Resolución exenta", "Oficio ordinario", "Oficio circular", None],
         },
         "fecha_oficio": {"type": ["string", "null"]},
         "concepto": {"type": ["string", "null"]},
@@ -80,23 +80,11 @@ Reglas de extracción y normalización:
    - sin \"N°\", sin \"Nº\", sin \"No.\", sin prefijos
    - ejemplo: \"Resolución Exenta Electrónica N° 38222\" => \"38222\"
 3. categoria:
-   normaliza a uno de estos valores exactos:
-   - \"Resolución exenta\"
-   - \"Oficio ordinario\"
-   - \"Oficio circular\"
-   - \"Multa\"
-   - \"Otro\"
-   Reglas:
-   - El nombre del archivo contiene un prefijo que indica la categoría:
-     - \"RE\" => \"Resolución exenta\"
-     - \"Ord.\" => \"Oficio ordinario\"
-     - \"OC\" => \"Oficio circular\"
-   - Usa el prefijo del nombre del archivo como guía principal para la categoría.
-   - Si el documento es una resolución exenta o resolución exenta electrónica, devuelve \"Resolución exenta\"
-   - Si el documento es un oficio ordinario, devuelve \"Oficio ordinario\"
-   - Si el documento es un oficio circular, devuelve \"Oficio circular\"
-   - Si el documento trata de una sanción, multa o cargo sancionatorio, y no encaja mejor como resolución exenta, devuelve \"Multa\"
-   - En caso contrario, \"Otro\"
+   normaliza a uno de estos tres valores exactos según el prefijo del nombre del archivo:
+   - \"RE\" => \"Resolución exenta\"
+   - \"Ord.\" => \"Oficio ordinario\"
+   - \"OC\" => \"Oficio circular\"
+   Usa siempre el prefijo del nombre del archivo para determinar la categoría.
 4. fecha_oficio:
    - es la fecha de emisión/envío del oficio o resolución
    - formato exacto YYYY-MM-DD
@@ -505,6 +493,9 @@ def remove_duplicate_files(watch_dir: Path, extensions: tuple[str, ...]) -> int:
     return removed
 
 
+_VALID_PREFIXES = re.compile(r"^(OC|Ord\.|RE)\s", re.IGNORECASE)
+
+
 def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
     if not config.watch_dir.exists():
         raise FileNotFoundError(f"No existe el directorio a revisar: {config.watch_dir}")
@@ -512,6 +503,9 @@ def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
     pdfs: List[Path] = []
     for path in sorted(config.watch_dir.iterdir()):
         if path.is_file() and path.suffix.lower() in config.scan_extensions:
+            if not _VALID_PREFIXES.match(path.name):
+                logging.info("Se omite archivo sin prefijo válido (OC/Ord./RE): %s", path.name)
+                continue
             file_hash = sha256_file(path)
             if file_hash not in processed_hashes:
                 pdfs.append(path)
