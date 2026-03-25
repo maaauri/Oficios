@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -464,6 +465,36 @@ def append_to_excel(excel_path: Path, row: List[Any]) -> bool:
     return True
 
 
+_COPY_PATTERN = re.compile(
+    r"^(?P<base>.+?)"
+    r"(?:"
+    r"\s*-\s*(?:cop(?:y|ia))(?:\s*\(\d+\))?"  # " - Copy", " - copia", " - Copy (2)"
+    r"|\s+\(\d+\)"                              # " (1)", " (2)"
+    r")"
+    r"(?P<ext>\.[^.]+)$",
+    re.IGNORECASE,
+)
+
+
+def remove_duplicate_files(watch_dir: Path, extensions: tuple[str, ...]) -> int:
+    """Detecta archivos que son copias (por nombre) y los elimina si el original existe."""
+    removed = 0
+    for path in sorted(watch_dir.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in extensions:
+            continue
+        m = _COPY_PATTERN.match(path.name)
+        if not m:
+            continue
+        original = watch_dir / (m.group("base") + m.group("ext"))
+        if original.exists() and original != path:
+            logging.info("Archivo duplicado detectado: %s (original: %s). Eliminando copia.", path.name, original.name)
+            path.unlink()
+            removed += 1
+    if removed:
+        logging.info("Se eliminaron %d copia(s) de archivos.", removed)
+    return removed
+
+
 def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
     if not config.watch_dir.exists():
         raise FileNotFoundError(f"No existe el directorio a revisar: {config.watch_dir}")
@@ -479,6 +510,7 @@ def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
 
 def process_directory(config: Config, state: dict[str, Any]) -> None:
     ensure_excel_exists(config.excel_path)
+    remove_duplicate_files(config.watch_dir, config.scan_extensions)
     processed_hashes: set[str] = set(state.get("processed_hashes", []))
     pending = find_pending_pdfs(config, processed_hashes)
 
