@@ -38,7 +38,7 @@ SCHEMA = {
         "numero_oficio": {"type": ["string", "null"]},
         "categoria": {
             "type": ["string", "null"],
-            "enum": ["Resolución exenta", "Oficio ordinario", "Multa", "Otro", None],
+            "enum": ["Resolución exenta", "Oficio ordinario", "Oficio circular", "Multa", "Otro", None],
         },
         "fecha_oficio": {"type": ["string", "null"]},
         "concepto": {"type": ["string", "null"]},
@@ -80,13 +80,20 @@ Reglas de extracción y normalización:
    normaliza a uno de estos valores exactos:
    - \"Resolución exenta\"
    - \"Oficio ordinario\"
+   - \"Oficio circular\"
    - \"Multa\"
    - \"Otro\"
    Reglas:
-   - si el documento es una resolución exenta o resolución exenta electrónica, devuelve \"Resolución exenta\"
-   - si el documento es un oficio ordinario, devuelve \"Oficio ordinario\"
-   - si el documento trata de una sanción, multa o cargo sancionatorio, y no encaja mejor como resolución exenta, devuelve \"Multa\"
-   - en caso contrario, \"Otro\"
+   - El nombre del archivo contiene un prefijo que indica la categoría:
+     - \"RE\" => \"Resolución exenta\"
+     - \"Ord.\" => \"Oficio ordinario\"
+     - \"OC\" => \"Oficio circular\"
+   - Usa el prefijo del nombre del archivo como guía principal para la categoría.
+   - Si el documento es una resolución exenta o resolución exenta electrónica, devuelve \"Resolución exenta\"
+   - Si el documento es un oficio ordinario, devuelve \"Oficio ordinario\"
+   - Si el documento es un oficio circular, devuelve \"Oficio circular\"
+   - Si el documento trata de una sanción, multa o cargo sancionatorio, y no encaja mejor como resolución exenta, devuelve \"Multa\"
+   - En caso contrario, \"Otro\"
 4. fecha_oficio:
    - es la fecha de emisión/envío del oficio o resolución
    - formato exacto YYYY-MM-DD
