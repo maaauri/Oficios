@@ -9,9 +9,12 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass
+import tkinter as tk
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from pathlib import Path
+from tkinter import messagebox
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -515,6 +518,42 @@ def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
     return pdfs
 
 
+@dataclass
+class ProcessingStats:
+    total: int = 0
+    errores: int = 0
+    categorias: Counter = field(default_factory=Counter)
+    areas: Counter = field(default_factory=Counter)
+
+    def registrar(self, extracted: dict[str, Any]) -> None:
+        self.total += 1
+        cat = extracted.get("categoria") or "Sin categoría"
+        area = extracted.get("gerencia_responsable") or "Sin área"
+        self.categorias[cat] += 1
+        self.areas[area] += 1
+
+    def resumen(self) -> str:
+        lines = [f"PDFs nuevos procesados: {self.total}"]
+        if self.errores:
+            lines.append(f"Errores: {self.errores}")
+        lines.append("")
+        lines.append("Por categoría:")
+        for cat, n in sorted(self.categorias.items()):
+            lines.append(f"  {cat}: {n}")
+        lines.append("")
+        lines.append("Por área:")
+        for area, n in sorted(self.areas.items()):
+            lines.append(f"  {area}: {n}")
+        return "\n".join(lines)
+
+
+def show_summary_popup(stats: ProcessingStats) -> None:
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showinfo("Resumen de procesamiento", stats.resumen())
+    root.destroy()
+
+
 def process_directory(config: Config, state: dict[str, Any]) -> None:
     ensure_excel_exists(config.excel_path)
     remove_duplicate_files(config.watch_dir, config.scan_extensions)
@@ -527,6 +566,7 @@ def process_directory(config: Config, state: dict[str, Any]) -> None:
 
     logging.info("Se encontraron %s PDF(s) nuevos para procesar.", len(pending))
 
+    stats = ProcessingStats()
     changed = False
     for pdf_path in pending:
         logging.info("Procesando %s", pdf_path.name)
@@ -545,15 +585,20 @@ def process_directory(config: Config, state: dict[str, Any]) -> None:
                 )
             row = map_row(extracted, config.gerentes)
             append_to_excel(config.excel_path, row)
+            stats.registrar(extracted)
             processed_hashes.add(file_hash)
             changed = True
             logging.info("PDF procesado correctamente: %s", pdf_path.name)
         except Exception as exc:
+            stats.errores += 1
             logging.exception("Error procesando %s: %s", pdf_path.name, exc)
 
     if changed:
         state["processed_hashes"] = sorted(processed_hashes)
         save_state(config.processed_state_path, state)
+
+    if stats.total or stats.errores:
+        show_summary_popup(stats)
 
 
 def parse_run_time(run_time: str) -> tuple[int, int]:
