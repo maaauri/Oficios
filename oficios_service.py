@@ -6,11 +6,15 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
-from dataclasses import dataclass
+import tkinter as tk
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from pathlib import Path
+from tkinter import messagebox
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -37,7 +41,7 @@ SCHEMA = {
         "numero_oficio": {"type": ["string", "null"]},
         "categoria": {
             "type": ["string", "null"],
-            "enum": ["Resolución exenta", "Oficio ordinario", "Multa", "Otro", None],
+            "enum": ["Resolución exenta", "Oficio ordinario", "Oficio circular", None],
         },
         "fecha_oficio": {"type": ["string", "null"]},
         "concepto": {"type": ["string", "null"]},
@@ -76,16 +80,11 @@ Reglas de extracción y normalización:
    - sin \"N°\", sin \"Nº\", sin \"No.\", sin prefijos
    - ejemplo: \"Resolución Exenta Electrónica N° 38222\" => \"38222\"
 3. categoria:
-   normaliza a uno de estos valores exactos:
-   - \"Resolución exenta\"
-   - \"Oficio ordinario\"
-   - \"Multa\"
-   - \"Otro\"
-   Reglas:
-   - si el documento es una resolución exenta o resolución exenta electrónica, devuelve \"Resolución exenta\"
-   - si el documento es un oficio ordinario, devuelve \"Oficio ordinario\"
-   - si el documento trata de una sanción, multa o cargo sancionatorio, y no encaja mejor como resolución exenta, devuelve \"Multa\"
-   - en caso contrario, \"Otro\"
+   normaliza a uno de estos tres valores exactos según el prefijo del nombre del archivo:
+   - \"RE\" => \"Resolución exenta\"
+   - \"Ord.\" => \"Oficio ordinario\"
+   - \"OC\" => \"Oficio circular\"
+   Usa siempre el prefijo del nombre del archivo para determinar la categoría.
 4. fecha_oficio:
    - es la fecha de emisión/envío del oficio o resolución
    - formato exacto YYYY-MM-DD
@@ -464,21 +463,101 @@ def append_to_excel(excel_path: Path, row: List[Any]) -> bool:
     return True
 
 
+_COPY_PATTERN = re.compile(
+    r"^(?P<base>.+?)"
+    r"(?:"
+    r"\s*-\s*(?:cop(?:y|ia))(?:\s*\(\d+\))?"  # " - Copy", " - copia", " - Copy (2)"
+    r"|\s+\(\d+\)"                              # " (1)", " (2)"
+    r")"
+    r"(?P<ext>\.[^.]+)$",
+    re.IGNORECASE,
+)
+
+
+def remove_duplicate_files(watch_dir: Path, extensions: tuple[str, ...]) -> int:
+    """Detecta archivos que son copias (por nombre) y los elimina si el original existe."""
+    removed = 0
+    for path in sorted(watch_dir.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in extensions:
+            continue
+        m = _COPY_PATTERN.match(path.name)
+        if not m:
+            continue
+        original = watch_dir / (m.group("base") + m.group("ext"))
+        if original.exists() and original != path:
+            logging.info("Archivo duplicado detectado: %s (original: %s). Eliminando copia.", path.name, original.name)
+            path.unlink()
+            removed += 1
+    if removed:
+        logging.info("Se eliminaron %d copia(s) de archivos.", removed)
+    return removed
+
+
+_VALID_PREFIXES = re.compile(r"^(OC|Ord\.|RE)\s", re.IGNORECASE)
+
+
 def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
     if not config.watch_dir.exists():
         raise FileNotFoundError(f"No existe el directorio a revisar: {config.watch_dir}")
 
     pdfs: List[Path] = []
     for path in sorted(config.watch_dir.iterdir()):
-        if path.is_file() and path.suffix.lower() in config.scan_extensions:
-            file_hash = sha256_file(path)
-            if file_hash not in processed_hashes:
-                pdfs.append(path)
+        if not path.is_file():
+            logging.info("Omitido (no es archivo): %s", path.name)
+            continue
+        if path.suffix.lower() not in config.scan_extensions:
+            logging.info("Omitido (extensión no es PDF): %s", path.name)
+            continue
+        if not _VALID_PREFIXES.match(path.name):
+            logging.info("Omitido (no inicia con OC, Ord. o RE): %s", path.name)
+            continue
+        file_hash = sha256_file(path)
+        if file_hash in processed_hashes:
+            logging.info("Omitido (ya fue procesado anteriormente): %s", path.name)
+            continue
+        pdfs.append(path)
     return pdfs
+
+
+@dataclass
+class ProcessingStats:
+    total: int = 0
+    errores: int = 0
+    categorias: Counter = field(default_factory=Counter)
+    areas: Counter = field(default_factory=Counter)
+
+    def registrar(self, extracted: dict[str, Any]) -> None:
+        self.total += 1
+        cat = extracted.get("categoria") or "Sin categoría"
+        area = extracted.get("gerencia_responsable") or "Sin área"
+        self.categorias[cat] += 1
+        self.areas[area] += 1
+
+    def resumen(self) -> str:
+        lines = [f"PDFs nuevos procesados: {self.total}"]
+        if self.errores:
+            lines.append(f"Errores: {self.errores}")
+        lines.append("")
+        lines.append("Por categoría:")
+        for cat, n in sorted(self.categorias.items()):
+            lines.append(f"  {cat}: {n}")
+        lines.append("")
+        lines.append("Por área:")
+        for area, n in sorted(self.areas.items()):
+            lines.append(f"  {area}: {n}")
+        return "\n".join(lines)
+
+
+def show_summary_popup(stats: ProcessingStats) -> None:
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showinfo("Resumen de procesamiento", stats.resumen())
+    root.destroy()
 
 
 def process_directory(config: Config, state: dict[str, Any]) -> None:
     ensure_excel_exists(config.excel_path)
+    remove_duplicate_files(config.watch_dir, config.scan_extensions)
     processed_hashes: set[str] = set(state.get("processed_hashes", []))
     pending = find_pending_pdfs(config, processed_hashes)
 
@@ -488,6 +567,7 @@ def process_directory(config: Config, state: dict[str, Any]) -> None:
 
     logging.info("Se encontraron %s PDF(s) nuevos para procesar.", len(pending))
 
+    stats = ProcessingStats()
     changed = False
     for pdf_path in pending:
         logging.info("Procesando %s", pdf_path.name)
@@ -506,15 +586,20 @@ def process_directory(config: Config, state: dict[str, Any]) -> None:
                 )
             row = map_row(extracted, config.gerentes)
             append_to_excel(config.excel_path, row)
+            stats.registrar(extracted)
             processed_hashes.add(file_hash)
             changed = True
             logging.info("PDF procesado correctamente: %s", pdf_path.name)
         except Exception as exc:
+            stats.errores += 1
             logging.exception("Error procesando %s: %s", pdf_path.name, exc)
 
     if changed:
         state["processed_hashes"] = sorted(processed_hashes)
         save_state(config.processed_state_path, state)
+
+    if stats.total or stats.errores:
+        show_summary_popup(stats)
 
 
 def parse_run_time(run_time: str) -> tuple[int, int]:
@@ -547,6 +632,12 @@ def run_once(config: Config) -> None:
     process_directory(config, state)
 
 
+def reset_state(config: Config) -> None:
+    state = {"processed_hashes": [], "last_run_date": None}
+    save_state(config.processed_state_path, state)
+    logging.info("Estado reseteado. Se reprocesarán todos los PDFs en la próxima ejecución.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Procesa PDFs de oficios y llena un Excel usando OpenAI API.")
     parser.add_argument("--config", default="config.json", help="Ruta al archivo de configuración JSON.")
@@ -556,6 +647,11 @@ def main() -> None:
         action="store_true",
         help="Crea solo la plantilla Excel definida en config.json y termina.",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Resetea la memoria de PDFs procesados para que se vuelvan a analizar.",
+    )
     args = parser.parse_args()
 
     config = load_config(Path(args.config))
@@ -564,6 +660,10 @@ def main() -> None:
     if args.create_template:
         create_excel_template(config.excel_path)
         logging.info("Plantilla creada: %s", config.excel_path)
+        return
+
+    if args.reset:
+        reset_state(config)
         return
 
     if args.run_once:
