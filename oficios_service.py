@@ -502,11 +502,11 @@ def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
 
     pdfs: List[Path] = []
     for path in sorted(config.watch_dir.iterdir()):
-        if not path.is_file():
-            logging.info("Omitido (no es archivo): %s", path.name)
+        if path.is_dir():
+            logging.info("Omitido (es un directorio): %s", path.name)
             continue
-        if path.suffix.lower() not in config.scan_extensions:
-            logging.info("Omitido (extensión no es PDF): %s", path.name)
+        if not path.name.lower().endswith(".pdf"):
+            logging.info("Omitido (no es un archivo PDF): %s", path.name)
             continue
         if not _VALID_PREFIXES.match(path.name):
             logging.info("Omitido (no inicia con OC, Ord. o RE): %s", path.name)
