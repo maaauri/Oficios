@@ -1,13 +1,21 @@
 {
-   "watch_dir": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/Evidencia",
+  "watch_dir": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/Evidencia",
   "excel_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/oficios.xlsx",
   "processed_state_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/processed_state.json",
   "log_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/oficios_service.log",
   "timezone": "America/Santiago",
   "run_time": "16:00",
-  "openai_api_key": "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",
+  "openai_api_key": "REEMPLAZAR_API_KEY",
   "model": "gpt-5.4-nano",
   "request_timeout_seconds": 180,
+  "planner": {
+    "enabled": true,
+    "tenant_id": "REEMPLAZAR_TENANT_ID",
+    "client_id": "REEMPLAZAR_CLIENT_ID",
+    "client_secret": "REEMPLAZAR_CLIENT_SECRET",
+    "plan_id": "REEMPLAZAR_PLAN_ID",
+    "bucket_id": "REEMPLAZAR_BUCKET_ID"
+  },
   "gerentes": {
     "PMGD": {
       "nombre": "REEMPLAZAR NOMBRE PMGD",

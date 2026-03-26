@@ -18,6 +18,7 @@ from tkinter import messagebox
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+import msal
 import requests
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -133,6 +134,16 @@ class Gerente:
 
 
 @dataclass
+class PlannerConfig:
+    enabled: bool = False
+    tenant_id: str = ""
+    client_id: str = ""
+    client_secret: str = ""
+    plan_id: str = ""
+    bucket_id: str = ""
+
+
+@dataclass
 class Config:
     watch_dir: Path
     excel_path: Path
@@ -143,6 +154,7 @@ class Config:
     openai_api_key: str
     model: str
     gerentes: Dict[str, Gerente]
+    planner: PlannerConfig = field(default_factory=PlannerConfig)
     request_timeout_seconds: int = 180
     scan_extensions: tuple[str, ...] = (".pdf",)
 
@@ -159,6 +171,16 @@ def load_config(path: Path) -> Config:
     if not api_key:
         raise ValueError("Falta openai_api_key en config.json o variable de entorno OPENAI_API_KEY.")
 
+    planner_raw = raw.get("planner", {})
+    planner = PlannerConfig(
+        enabled=planner_raw.get("enabled", False),
+        tenant_id=planner_raw.get("tenant_id", ""),
+        client_id=planner_raw.get("client_id", ""),
+        client_secret=planner_raw.get("client_secret", ""),
+        plan_id=planner_raw.get("plan_id", ""),
+        bucket_id=planner_raw.get("bucket_id", ""),
+    )
+
     return Config(
         watch_dir=Path(raw["watch_dir"]),
         excel_path=Path(raw["excel_path"]),
@@ -169,6 +191,7 @@ def load_config(path: Path) -> Config:
         openai_api_key=api_key,
         model=raw.get("model", "gpt-5.4-mini"),
         gerentes=gerentes,
+        planner=planner,
         request_timeout_seconds=int(raw.get("request_timeout_seconds", 180)),
     )
 
@@ -559,6 +582,119 @@ def show_summary_popup(stats: ProcessingStats) -> None:
     root.destroy()
 
 
+# ---------------------------------------------------------------------------
+# Microsoft Planner integration
+# ---------------------------------------------------------------------------
+
+def get_planner_token(planner: PlannerConfig) -> Optional[str]:
+    authority = f"https://login.microsoftonline.com/{planner.tenant_id}"
+    app = msal.ConfidentialClientApplication(
+        planner.client_id,
+        authority=authority,
+        client_credential=planner.client_secret,
+    )
+    result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+    if "access_token" in result:
+        return result["access_token"]
+    logging.error("No se pudo obtener token de Planner: %s", result.get("error_description", result))
+    return None
+
+
+def create_planner_task(token: str, planner: PlannerConfig, title: str, due_date: date) -> bool:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "planId": planner.plan_id,
+        "bucketId": planner.bucket_id,
+        "title": title,
+        "dueDateTime": f"{due_date.isoformat()}T23:59:59Z",
+    }
+    resp = requests.post(
+        "https://graph.microsoft.com/v1.0/planner/tasks",
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+    if resp.ok:
+        logging.info("Tarea creada en Planner: %s", title)
+        return True
+    logging.error("Error creando tarea en Planner: %s — %s", resp.status_code, resp.text)
+    return False
+
+
+def sync_to_planner(config: Config, extracted: dict[str, Any], due_date: date) -> None:
+    if not config.planner.enabled:
+        return
+    if due_date <= date.today():
+        logging.info("Plazo ya vencido, no se crea tarea en Planner: %s", extracted.get("numero_oficio"))
+        return
+    nro = extracted.get("numero_oficio") or "S/N"
+    cat = extracted.get("categoria") or ""
+    concepto = extracted.get("concepto") or ""
+    gerencia = extracted.get("gerencia_responsable") or ""
+    title = f"[{cat}] Nro {nro} — {gerencia} — {concepto[:80]}"
+    token = get_planner_token(config.planner)
+    if token:
+        create_planner_task(token, config.planner, title, due_date)
+
+
+# ---------------------------------------------------------------------------
+# Alerta de oficios próximos a vencer
+# ---------------------------------------------------------------------------
+
+def get_upcoming_deadlines(excel_path: Path, days: int = 5) -> List[Dict[str, Any]]:
+    if not excel_path.exists():
+        return []
+    wb = load_workbook(excel_path, read_only=True)
+    ws = wb.active
+    today = date.today()
+    limit = today + timedelta(days=days)
+    upcoming: List[Dict[str, Any]] = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        plazo = row[8]  # columna I = Plazo Respuesta
+        if plazo is None:
+            continue
+        if hasattr(plazo, "date"):
+            plazo = plazo.date()
+        if not isinstance(plazo, date):
+            continue
+        if today <= plazo <= limit:
+            upcoming.append({
+                "nro": str(row[0] or ""),
+                "categoria": str(row[1] or ""),
+                "concepto": str(row[3] or ""),
+                "gerencia": str(row[5] or ""),
+                "gerente": str(row[6] or ""),
+                "plazo": plazo,
+            })
+    wb.close()
+    return upcoming
+
+
+def show_upcoming_deadlines_popup(excel_path: Path) -> None:
+    upcoming = get_upcoming_deadlines(excel_path)
+    if not upcoming:
+        return
+    lines = [f"Oficios que vencen en los próximos 5 días: {len(upcoming)}", ""]
+    for item in sorted(upcoming, key=lambda x: x["plazo"]):
+        dias_restantes = (item["plazo"] - date.today()).days
+        lines.append(
+            f"  • Nro {item['nro']} ({item['categoria']})"
+            f" — Vence: {item['plazo'].strftime('%d-%m-%Y')}"
+            f" ({dias_restantes}d)"
+        )
+        lines.append(f"    Área: {item['gerencia']} | Gerente: {item['gerente']}")
+        if item["concepto"]:
+            lines.append(f"    {item['concepto'][:100]}")
+        lines.append("")
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showwarning("Oficios próximos a vencer", "\n".join(lines))
+    root.destroy()
+
+
 def process_directory(config: Config, state: dict[str, Any]) -> None:
     ensure_excel_exists(config.excel_path)
     remove_duplicate_files(config.watch_dir, config.scan_extensions)
@@ -590,6 +726,8 @@ def process_directory(config: Config, state: dict[str, Any]) -> None:
                 )
             row = map_row(extracted, config.gerentes)
             append_to_excel(config.excel_path, row)
+            if due_date:
+                sync_to_planner(config, extracted, due_date)
             stats.registrar(extracted)
             processed_hashes.add(file_hash)
             changed = True
@@ -624,6 +762,7 @@ def service_loop(config: Config) -> None:
         if (now.hour > hour or (now.hour == hour and now.minute >= minute)) and state.get("last_run_date") != today:
             logging.info("Ejecución diaria iniciada.")
             process_directory(config, state)
+            show_upcoming_deadlines_popup(config.excel_path)
             state["last_run_date"] = today
             save_state(config.processed_state_path, state)
             logging.info("Ejecución diaria finalizada.")
@@ -634,6 +773,7 @@ def service_loop(config: Config) -> None:
 def run_once(config: Config) -> None:
     state = load_state(config.processed_state_path)
     process_directory(config, state)
+    show_upcoming_deadlines_popup(config.excel_path)
 
 
 def reset_state(config: Config) -> None:
