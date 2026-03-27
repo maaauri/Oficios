@@ -48,7 +48,7 @@ SCHEMA = {
         "concepto": {"type": ["string", "null"]},
         "gerencia_responsable": {
             "type": ["string", "null"],
-            "enum": ["PMGD", "Conexiones", "Lectura", "Servicio al Cliente", "Cobranza", None],
+            "enum": ["PMGD", "Conexiones", "Lectura", "Servicio al Cliente", "Cobranza", "Pérdidas", None],
         },
         "plazo_respuesta": {"type": ["string", "null"]},
         "plazo_relativo_cantidad": {"type": ["integer", "null"], "minimum": 1},
@@ -103,12 +103,14 @@ Reglas de extracción y normalización:
    - \"Lectura\"
    - \"Servicio al Cliente\"
    - \"Cobranza\"
+   - \"Pérdidas\"
    Criterios:
    - \"PMGD\": generación distribuida, conexión de PMGD, plataformas o procesos PMGD
    - \"Conexiones\": conexión, empalme, factibilidad, puesta en servicio, plazos de conexión, obras o procesos de conexión
    - \"Lectura\": lectura de medidores, medición, consumos leídos, toma de lectura
    - \"Servicio al Cliente\": atención, reclamos, canales, calidad de servicio, respuesta al cliente
    - \"Cobranza\": deuda, mora, pago, repactación, suspensión/corte por deuda, cobranza
+   - \"Pérdidas\": pérdidas de energía, hurto de energía, consumo no registrado, fraude eléctrico, intervención de medidor, irregularidades en consumo
    Si hay más de un tema, elige el principal.
 7. plazo_respuesta:
    - devuelve una fecha explícita de vencimiento en formato YYYY-MM-DD solo si en el PDF existe una fecha calendario inequívoca
@@ -689,7 +691,7 @@ def sync_to_planner(config: Config, extracted: dict[str, Any], due_date: date) -
 # Correcciones / aprendizaje
 # ---------------------------------------------------------------------------
 
-AREAS_VALIDAS = ["PMGD", "Conexiones", "Lectura", "Servicio al Cliente", "Cobranza"]
+AREAS_VALIDAS = ["PMGD", "Conexiones", "Lectura", "Servicio al Cliente", "Cobranza", "Pérdidas"]
 
 
 def load_corrections(path: Path) -> List[Dict[str, Any]]:
