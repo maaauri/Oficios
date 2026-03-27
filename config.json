@@ -36,6 +36,10 @@
     "Cobranza": {
       "nombre": "REEMPLAZAR NOMBRE COBRANZA",
       "email": ""
+    },
+    "Pérdidas": {
+      "nombre": "REEMPLAZAR NOMBRE PÉRDIDAS",
+      "email": ""
     }
   }
 }
