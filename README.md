@@ -22,7 +22,7 @@
   - Equipo
   - Plazo Respuesta
 - Crea tareas en **Microsoft Planner** para oficios con plazo vigente (no vencido).
-- Muestra un **popup de resumen** al finalizar con la cantidad de PDFs procesados, desglosados por categoría y área.
+- Muestra un **popup de resumen** al finalizar con la cantidad de PDFs procesados, desglosados por categoría y área. Si algún oficio trata sobre **multas o formulación de cargos**, se destacan en el resumen con una alerta visual.
 - Muestra un **popup de alerta** con los oficios que vencen en los próximos 5 días, indicando número, categoría, fecha, área y gerente responsable.
 
 ## Categorías y prefijos de archivo
@@ -36,6 +36,13 @@ Solo se procesan PDFs cuyo nombre comience con uno de estos prefijos:
 | `RE`    | Resolución exenta  |
 
 Los archivos que no cumplan con estos prefijos se omiten y se registra el motivo en el log.
+
+## Detección de multas y formulación de cargos
+
+El script analiza el concepto de cada oficio procesado buscando palabras clave como "multa", "formulación de cargos", "sanción" o "cargo sancionatorio". Si detecta alguno:
+- Se destaca en el popup de resumen con el icono de advertencia.
+- El título del popup indica cuántas multas se detectaron.
+- Se listan los oficios afectados con su número, categoría, área y concepto.
 
 ## Cálculo de plazo relativo
 Si el PDF trae una fecha exacta de vencimiento, el script usa esa fecha.
@@ -52,6 +59,24 @@ el script calcula `Plazo Respuesta` usando la **fecha del oficio** (`Fecha de Of
 - `días corridos`: suma días calendario.
 - Si el texto dice solo `días` sin aclaración, se trata como `días corridos`.
 - Aún **no** descuenta feriados de Chile.
+
+## Revaloración (correcciones y aprendizaje)
+
+Si la IA clasificó un oficio con el área o plazo incorrecto, puedes corregirlo con:
+
+```bash
+python oficios_service.py --config config.json --revaluar
+```
+
+Esto abre una **interfaz gráfica** donde puedes:
+1. Seleccionar un oficio de la lista.
+2. Cambiar el **área responsable** (dropdown con las 5 áreas válidas).
+3. Cambiar el **plazo de respuesta** (formato DD-MM-YYYY).
+4. Guardar la corrección.
+
+Las correcciones se almacenan en `corrections.json` y se usan como **ejemplos de aprendizaje** en futuras ejecuciones. El prompt de OpenAI incluye las últimas 20 correcciones como referencia para que el modelo mejore su clasificación en oficios similares.
+
+Las correcciones también actualizan el Excel inmediatamente.
 
 ## Integración con Microsoft Planner
 
@@ -79,6 +104,7 @@ Si `enabled` es `false`, la integración se desactiva y el script funciona sin P
 ## Archivos
 - `oficios_service.py`: servicio principal.
 - `config.json`: archivo de configuración.
+- `corrections.json`: correcciones del usuario (generado automáticamente por `--revaluar`).
 - `requirements.txt`: dependencias (`requests`, `openpyxl`, `msal`).
 
 ## Configuración
@@ -118,6 +144,12 @@ El proceso queda corriendo y ejecuta una vez por día a la hora programada.
 python oficios_service.py --config config.json --reset
 ```
 Borra los hashes almacenados para que todos los PDFs se reprocesen en la siguiente ejecución.
+
+### Revaloración de oficios
+```bash
+python oficios_service.py --config config.json --revaluar
+```
+Abre una interfaz gráfica para corregir el área responsable o el plazo de respuesta de oficios ya procesados. Las correcciones alimentan el aprendizaje del modelo.
 
 ## Recomendación para Windows
 Si no quieres dejar una terminal abierta todo el día, crea una tarea con el Programador de tareas de Windows para que el script se ejecute al iniciar sesión. El script se mantiene vivo y corre la revisión diaria a las 16:00.
