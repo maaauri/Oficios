@@ -33,6 +33,7 @@ EXPECTED_COLUMNS = [
     "Gerente Responsable",
     "Equipo",
     "Plazo Respuesta",
+    "Multa",
 ]
 
 SCHEMA = {
@@ -260,6 +261,7 @@ def create_excel_template(path: Path, sheet_name: str = "Oficios") -> None:
         "G": 26,
         "H": 14,
         "I": 18,
+        "J": 10,
     }
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
@@ -280,10 +282,33 @@ def ensure_excel_exists(path: Path) -> None:
     wb = load_workbook(path)
     ws = wb.active
     existing = [ws.cell(row=1, column=i).value for i in range(1, len(EXPECTED_COLUMNS) + 1)]
-    if existing != EXPECTED_COLUMNS:
-        raise ValueError(
-            f"El Excel existente no tiene los encabezados esperados. Esperado: {EXPECTED_COLUMNS} | Actual: {existing}"
-        )
+    if existing == EXPECTED_COLUMNS:
+        return
+
+    # Migrar: si solo falta la columna "Multa" al final, agregarla automáticamente
+    old_columns = EXPECTED_COLUMNS[:-1]
+    existing_old = [ws.cell(row=1, column=i).value for i in range(1, len(old_columns) + 1)]
+    if existing_old == old_columns:
+        col_idx = len(EXPECTED_COLUMNS)
+        header_cell = ws.cell(row=1, column=col_idx, value="Multa")
+        header_cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+        header_cell.font = Font(color="FFFFFF", bold=True)
+        header_cell.alignment = Alignment(horizontal="center", vertical="center")
+        header_cell.border = Border(bottom=Side(style="thin", color="D9E2F3"))
+        ws.column_dimensions["J"].width = 10
+        # Rellenar multa para filas existentes según concepto
+        for row_idx in range(2, ws.max_row + 1):
+            concepto = str(ws.cell(row=row_idx, column=4).value or "")
+            if concepto and es_multa_o_cargos(concepto):
+                cell = ws.cell(row=row_idx, column=col_idx, value="Sí")
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+        wb.save(path)
+        logging.info("Columna 'Multa' agregada al Excel existente.")
+        return
+
+    raise ValueError(
+        f"El Excel existente no tiene los encabezados esperados. Esperado: {EXPECTED_COLUMNS} | Actual: {existing}"
+    )
 
 
 def load_state(path: Path) -> dict[str, Any]:
@@ -444,16 +469,20 @@ def map_row(extracted: dict[str, Any], gerentes: Dict[str, Gerente]) -> List[Any
     fecha_oficio = parse_date_yyyy_mm_dd(extracted.get("fecha_oficio"))
     plazo = compute_due_date(extracted)
 
+    concepto = extracted.get("concepto") or ""
+    multa = "Sí" if es_multa_o_cargos(concepto) else ""
+
     return [
         extracted.get("numero_oficio") or "",
         extracted.get("categoria") or "",
         fecha_oficio,
-        extracted.get("concepto") or "",
+        concepto,
         "Comercial y Servicio al Cliente",
         gerencia or "",
         gerente.nombre,
         "",
         plazo,
+        multa,
     ]
 
 
@@ -498,6 +527,8 @@ def append_to_excel(excel_path: Path, row: List[Any]) -> bool:
         if col_idx in (3, 9):
             cell.number_format = "DD-MM-YYYY"
             cell.alignment = Alignment(horizontal="center")
+        elif col_idx == 10:
+            cell.alignment = Alignment(horizontal="center", vertical="center")
         elif col_idx in (1, 2, 5, 6, 7, 8):
             cell.alignment = Alignment(vertical="center")
         else:
