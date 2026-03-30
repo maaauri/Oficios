@@ -849,7 +849,10 @@ def build_corrections_prompt(corrections: List[Dict[str, Any]]) -> str:
 
 
 def show_revaluar_gui(config: Config) -> None:
-    from revaluar import show_revaluar_gui as _gui
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from importlib import import_module
+    _mod = import_module("revaluar")
+    _gui = _mod.show_revaluar_gui
     _gui(config.excel_path, config.corrections_path, config.gerentes)
 
 

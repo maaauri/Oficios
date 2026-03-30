@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import sys
@@ -245,13 +244,14 @@ def show_revaluar_gui(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Corrige área responsable y plazo de oficios ya procesados.",
-    )
-    parser.add_argument("--config", default="config.json", help="Ruta al archivo de configuración JSON.")
-    args = parser.parse_args()
+    script_dir = Path(__file__).resolve().parent
+    config_path = script_dir / "config.json"
 
-    cfg = load_revaluar_config(Path(args.config))
+    if not config_path.exists():
+        messagebox.showerror("Error", f"No se encontró config.json en:\n{script_dir}")
+        return
+
+    cfg = load_revaluar_config(config_path)
 
     logging.basicConfig(
         level=logging.INFO,
