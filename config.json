@@ -1,11 +1,11 @@
 {
-  "watch_dir": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/Evidencia",
-  "excel_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/oficios.xlsx",
-  "processed_state_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/processed_state.json",
-  "log_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Test/oficios_service.log",
+  "watch_dir": "C:/Users/analistamjml/OneDrive - Grupo CGE/Escritorio/files/Evidencia",
+  "excel_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Escritorio/files/oficios.xlsx",
+  "processed_state_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Escritorio/files/processed_state.json",
+  "log_path": "C:/Users/analistamjml/OneDrive - Grupo CGE/Escritorio/files/oficios_service.log",
   "timezone": "America/Santiago",
   "run_time": "16:00",
-  "openai_api_key": "REEMPLAZAR_API_KEY",
+  "openai_api_key": "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",
   "model": "gpt-5.4-nano",
   "request_timeout_seconds": 180,
   "outlook": {
@@ -15,36 +15,36 @@
   },
   "planner": {
     "enabled": true,
-    "tenant_id": "REEMPLAZAR_TENANT_ID",
-    "client_id": "REEMPLAZAR_CLIENT_ID",
-    "client_secret": "REEMPLAZAR_CLIENT_SECRET",
+    "tenant_id": "f46feb3c-8562-4572-8b5a-d82e45334b51",
+    "client_id": "68958b5f-7b33-4792-9b1a-a70d18764f3f",
+    "client_secret": "4mr8Q~V-_dCaKYMflDaK1dsk_UcO6VpG9S.y0cbz",
     "plan_id": "REEMPLAZAR_PLAN_ID",
     "bucket_id": "REEMPLAZAR_BUCKET_ID"
   },
   "gerentes": {
     "PMGD": {
-      "nombre": "REEMPLAZAR NOMBRE PMGD",
-      "email": ""
+      "nombre": "Nirvia Sibila",
+      "email": "nzsibilam@cge.cl"
     },
     "Conexiones": {
-      "nombre": "REEMPLAZAR NOMBRE CONEXIONES",
-      "email": ""
+      "nombre": "Claudia Cea",
+      "email": "cbceaf@cge.cl"
     },
     "Lectura": {
-      "nombre": "REEMPLAZAR NOMBRE LECTURA",
-      "email": ""
+      "nombre": "Claudio Osorio",
+      "email": "caosoriom@cge.cl"
     },
     "Servicio al Cliente": {
-      "nombre": "REEMPLAZAR NOMBRE SERVICIO AL CLIENTE",
-      "email": ""
+      "nombre": "Sandra Cortés",
+      "email": "scortes@CGE.CL"
     },
     "Cobranza": {
-      "nombre": "REEMPLAZAR NOMBRE COBRANZA",
-      "email": ""
+      "nombre": "Karen Carvajal",
+      "email": "kncarvajalc@CGE.CL"
     },
     "Pérdidas": {
-      "nombre": "REEMPLAZAR NOMBRE PÉRDIDAS",
-      "email": ""
+      "nombre": "Carolina Sánchez",
+      "email": "casanchezn@CGE.CL"
     }
   }
 }
