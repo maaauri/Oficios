@@ -146,6 +146,13 @@ class PlannerConfig:
 
 
 @dataclass
+class OutlookConfig:
+    enabled: bool = False
+    user_email: str = ""
+    folder_name: str = "Oficios"
+
+
+@dataclass
 class Config:
     watch_dir: Path
     excel_path: Path
@@ -158,6 +165,7 @@ class Config:
     model: str
     gerentes: Dict[str, Gerente]
     planner: PlannerConfig = field(default_factory=PlannerConfig)
+    outlook: OutlookConfig = field(default_factory=OutlookConfig)
     request_timeout_seconds: int = 180
     scan_extensions: tuple[str, ...] = (".pdf",)
 
@@ -184,6 +192,13 @@ def load_config(path: Path) -> Config:
         bucket_id=planner_raw.get("bucket_id", ""),
     )
 
+    outlook_raw = raw.get("outlook", {})
+    outlook = OutlookConfig(
+        enabled=outlook_raw.get("enabled", False),
+        user_email=outlook_raw.get("user_email", ""),
+        folder_name=outlook_raw.get("folder_name", "Oficios"),
+    )
+
     return Config(
         watch_dir=Path(raw["watch_dir"]),
         excel_path=Path(raw["excel_path"]),
@@ -196,6 +211,7 @@ def load_config(path: Path) -> Config:
         model=raw.get("model", "gpt-5.4-mini"),
         gerentes=gerentes,
         planner=planner,
+        outlook=outlook,
         request_timeout_seconds=int(raw.get("request_timeout_seconds", 180)),
     )
 
@@ -688,23 +704,129 @@ def sync_to_planner(config: Config, extracted: dict[str, Any], due_date: date) -
 
 
 # ---------------------------------------------------------------------------
-# Correcciones / aprendizaje
+# Outlook attachment downloader
 # ---------------------------------------------------------------------------
 
-AREAS_VALIDAS = ["PMGD", "Conexiones", "Lectura", "Servicio al Cliente", "Cobranza", "Pérdidas"]
 
+def find_outlook_folder_id(token: str, user_email: str, folder_name: str) -> Optional[str]:
+    """Busca el ID de una carpeta de correo por nombre."""
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/users/{user_email}/mailFolders"
+    params = {"$filter": f"displayName eq '{folder_name}'", "$top": "50"}
+    resp = requests.get(url, headers=headers, params=params, timeout=30)
+    if not resp.ok:
+        logging.error("Error listando carpetas de correo: %s — %s", resp.status_code, resp.text)
+        return None
+    folders = resp.json().get("value", [])
+    for f in folders:
+        if f.get("displayName") == folder_name:
+            return f["id"]
+    logging.warning("No se encontró la carpeta '%s' en el buzón de %s", folder_name, user_email)
+    return None
+
+
+def download_outlook_attachments(config: Config, state: dict[str, Any]) -> int:
+    """Descarga adjuntos PDF de la carpeta Outlook configurada. Retorna cantidad de archivos nuevos."""
+    if not config.outlook.enabled:
+        return 0
+
+    if not config.outlook.user_email:
+        logging.warning("Outlook habilitado pero falta user_email en config.")
+        return 0
+
+    token = get_planner_token(config.planner)
+    if not token:
+        logging.error("No se pudo obtener token para Outlook.")
+        return 0
+
+    folder_id = find_outlook_folder_id(token, config.outlook.user_email, config.outlook.folder_name)
+    if not folder_id:
+        return 0
+
+    processed_ids: set[str] = set(state.get("outlook_processed_ids", []))
+    headers = {"Authorization": f"Bearer {token}"}
+    user = config.outlook.user_email
+    saved = 0
+
+    page_size = 50
+    skip = 0
+    while True:
+        url = f"https://graph.microsoft.com/v1.0/users/{user}/mailFolders/{folder_id}/messages"
+        params = {
+            "$top": str(page_size),
+            "$skip": str(skip),
+            "$select": "id,subject,hasAttachments,receivedDateTime",
+            "$orderby": "receivedDateTime desc",
+        }
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        if not resp.ok:
+            logging.error("Error listando mensajes: %s — %s", resp.status_code, resp.text)
+            break
+
+        messages = resp.json().get("value", [])
+        if not messages:
+            break
+
+        all_already_processed = True
+        for msg in messages:
+            msg_id = msg["id"]
+            if msg_id in processed_ids:
+                continue
+            all_already_processed = False
+
+            if not msg.get("hasAttachments"):
+                processed_ids.add(msg_id)
+                continue
+
+            att_url = f"https://graph.microsoft.com/v1.0/users/{user}/messages/{msg_id}/attachments"
+            att_resp = requests.get(att_url, headers=headers, timeout=30)
+            if not att_resp.ok:
+                logging.error("Error obteniendo adjuntos del mensaje %s: %s", msg_id, att_resp.status_code)
+                continue
+
+            for att in att_resp.json().get("value", []):
+                if att.get("@odata.type") != "#microsoft.graph.fileAttachment":
+                    continue
+                name = att.get("name", "")
+                if not name.lower().endswith(".pdf"):
+                    continue
+                content_bytes = att.get("contentBytes")
+                if not content_bytes:
+                    continue
+
+                dest = config.watch_dir / name
+                if dest.exists():
+                    logging.info("Adjunto ya existe en disco, omitido: %s", name)
+                else:
+                    dest.write_bytes(base64.b64decode(content_bytes))
+                    logging.info("Adjunto descargado: %s (mensaje: %s)", name, msg.get("subject", ""))
+                    saved += 1
+
+            processed_ids.add(msg_id)
+
+        if all_already_processed:
+            break
+        skip += page_size
+
+    state["outlook_processed_ids"] = sorted(processed_ids)
+    save_state(config.processed_state_path, state)
+
+    if saved:
+        logging.info("Se descargaron %d adjunto(s) nuevos desde Outlook.", saved)
+    else:
+        logging.info("No hay adjuntos nuevos en Outlook.")
+    return saved
+
+
+# ---------------------------------------------------------------------------
+# Correcciones / aprendizaje
+# ---------------------------------------------------------------------------
 
 def load_corrections(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def save_corrections(path: Path, corrections: List[Dict[str, Any]]) -> None:
-    ensure_parent(path)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(corrections, f, ensure_ascii=False, indent=2)
 
 
 def build_corrections_prompt(corrections: List[Dict[str, Any]]) -> str:
@@ -726,162 +848,9 @@ def build_corrections_prompt(corrections: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def update_excel_row(excel_path: Path, nro: str, categoria: str, updates: Dict[str, Any], gerentes: Dict[str, Gerente]) -> bool:
-    wb = load_workbook(excel_path)
-    ws = wb.active
-    for row_idx in range(2, ws.max_row + 1):
-        cell_nro = str(ws.cell(row=row_idx, column=1).value or "").strip()
-        cell_cat = str(ws.cell(row=row_idx, column=2).value or "").strip()
-        if cell_nro == nro and cell_cat == categoria:
-            if "gerencia_responsable" in updates:
-                new_gerencia = updates["gerencia_responsable"]
-                ws.cell(row=row_idx, column=6, value=new_gerencia)
-                gerente = gerentes.get(new_gerencia, Gerente(nombre=""))
-                ws.cell(row=row_idx, column=7, value=gerente.nombre)
-            if "plazo_respuesta" in updates:
-                new_plazo = parse_date_yyyy_mm_dd(updates["plazo_respuesta"])
-                if new_plazo:
-                    cell = ws.cell(row=row_idx, column=9, value=new_plazo)
-                    cell.number_format = "DD-MM-YYYY"
-                    cell.alignment = Alignment(horizontal="center")
-            wb.save(excel_path)
-            return True
-    return False
-
-
 def show_revaluar_gui(config: Config) -> None:
-    excel_path = config.excel_path
-    if not excel_path.exists():
-        logging.error("No existe el Excel: %s", excel_path)
-        return
-
-    wb = load_workbook(excel_path, read_only=True)
-    ws = wb.active
-    rows_data = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        nro = str(row[0] or "").strip()
-        if not nro:
-            continue
-        cat = str(row[1] or "")
-        concepto = str(row[3] or "")
-        gerencia = str(row[5] or "")
-        plazo = row[8]
-        if hasattr(plazo, "date"):
-            plazo = plazo.date()
-        plazo_str = plazo.strftime("%d-%m-%Y") if isinstance(plazo, date) else ""
-        rows_data.append({
-            "nro": nro, "categoria": cat, "concepto": concepto,
-            "gerencia": gerencia, "plazo_str": plazo_str,
-        })
-    wb.close()
-
-    if not rows_data:
-        messagebox.showinfo("Revaloración", "No hay oficios en el Excel.")
-        return
-
-    root = tk.Tk()
-    root.title("Revaloración de oficios")
-    root.geometry("800x500")
-    root.resizable(True, True)
-
-    # --- Lista de oficios ---
-    frame_list = tk.Frame(root)
-    frame_list.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-
-    tk.Label(frame_list, text="Seleccione un oficio para corregir:", font=("Arial", 10, "bold")).pack(anchor=tk.W)
-
-    listbox = tk.Listbox(frame_list, font=("Consolas", 9), selectmode=tk.SINGLE)
-    scrollbar = tk.Scrollbar(frame_list, orient=tk.VERTICAL, command=listbox.yview)
-    listbox.configure(yscrollcommand=scrollbar.set)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    listbox.pack(fill=tk.BOTH, expand=True)
-
-    for rd in rows_data:
-        listbox.insert(tk.END, f"Nro {rd['nro']}  |  {rd['categoria']}  |  {rd['gerencia']}  |  {rd['plazo_str']}  |  {rd['concepto'][:60]}")
-
-    # --- Formulario de corrección ---
-    frame_form = tk.Frame(root)
-    frame_form.pack(fill=tk.X, padx=10, pady=5)
-
-    tk.Label(frame_form, text="Nueva área responsable:").grid(row=0, column=0, sticky=tk.W, pady=2)
-    area_var = tk.StringVar(root)
-    area_var.set("")
-    area_options = ["(sin cambio)"] + AREAS_VALIDAS
-    area_menu = tk.OptionMenu(frame_form, area_var, *area_options)
-    area_menu.config(width=25)
-    area_menu.grid(row=0, column=1, sticky=tk.W, padx=5)
-
-    tk.Label(frame_form, text="Nuevo plazo (DD-MM-YYYY):").grid(row=1, column=0, sticky=tk.W, pady=2)
-    plazo_entry = tk.Entry(frame_form, width=20)
-    plazo_entry.grid(row=1, column=1, sticky=tk.W, padx=5)
-
-    status_label = tk.Label(root, text="", fg="green", font=("Arial", 9))
-    status_label.pack(pady=2)
-
-    def on_save():
-        sel = listbox.curselection()
-        if not sel:
-            messagebox.showwarning("Revaloración", "Seleccione un oficio primero.")
-            return
-        idx = sel[0]
-        rd = rows_data[idx]
-        corrections = load_corrections(config.corrections_path)
-        updates: Dict[str, Any] = {}
-        new_area = area_var.get()
-        new_plazo_raw = plazo_entry.get().strip()
-
-        if new_area and new_area != "(sin cambio)":
-            corrections.append({
-                "nro": rd["nro"],
-                "campo": "gerencia_responsable",
-                "valor_anterior": rd["gerencia"],
-                "valor_nuevo": new_area,
-                "concepto": rd["concepto"],
-            })
-            updates["gerencia_responsable"] = new_area
-
-        if new_plazo_raw:
-            try:
-                parsed_plazo = datetime.strptime(new_plazo_raw, "%d-%m-%Y").date()
-                corrections.append({
-                    "nro": rd["nro"],
-                    "campo": "plazo_respuesta",
-                    "valor_anterior": rd["plazo_str"],
-                    "valor_nuevo": parsed_plazo.isoformat(),
-                    "concepto": rd["concepto"],
-                })
-                updates["plazo_respuesta"] = parsed_plazo.isoformat()
-            except ValueError:
-                messagebox.showerror("Error", "Formato de fecha inválido. Use DD-MM-YYYY.")
-                return
-
-        if not updates:
-            messagebox.showinfo("Revaloración", "No se indicó ninguna corrección.")
-            return
-
-        update_excel_row(excel_path, rd["nro"], rd["categoria"], updates, config.gerentes)
-        save_corrections(config.corrections_path, corrections)
-
-        # Actualizar listbox
-        new_gerencia = updates.get("gerencia_responsable", rd["gerencia"])
-        new_plazo_str = rd["plazo_str"]
-        if "plazo_respuesta" in updates:
-            p = parse_date_yyyy_mm_dd(updates["plazo_respuesta"])
-            new_plazo_str = p.strftime("%d-%m-%Y") if p else rd["plazo_str"]
-        rd["gerencia"] = new_gerencia
-        rd["plazo_str"] = new_plazo_str
-        listbox.delete(idx)
-        listbox.insert(idx, f"Nro {rd['nro']}  |  {rd['categoria']}  |  {rd['gerencia']}  |  {rd['plazo_str']}  |  {rd['concepto'][:60]}")
-
-        status_label.config(text=f"Oficio Nro {rd['nro']} corregido correctamente.")
-        logging.info("Corrección aplicada: Nro %s — %s", rd["nro"], updates)
-
-        area_var.set("(sin cambio)")
-        plazo_entry.delete(0, tk.END)
-
-    tk.Button(root, text="Guardar corrección", command=on_save, bg="#1F4E78", fg="white", font=("Arial", 10, "bold")).pack(pady=8)
-
-    root.mainloop()
+    from revaluar import show_revaluar_gui as _gui
+    _gui(config.excel_path, config.corrections_path, config.gerentes)
 
 
 # ---------------------------------------------------------------------------
@@ -1008,6 +977,10 @@ def service_loop(config: Config) -> None:
 
         if (now.hour > hour or (now.hour == hour and now.minute >= minute)) and state.get("last_run_date") != today:
             logging.info("Ejecución diaria iniciada.")
+            try:
+                download_outlook_attachments(config, state)
+            except Exception as exc:
+                logging.exception("Error descargando adjuntos de Outlook: %s", exc)
             process_directory(config, state)
             show_upcoming_deadlines_popup(config.excel_path)
             state["last_run_date"] = today
@@ -1019,6 +992,10 @@ def service_loop(config: Config) -> None:
 
 def run_once(config: Config) -> None:
     state = load_state(config.processed_state_path)
+    try:
+        download_outlook_attachments(config, state)
+    except Exception as exc:
+        logging.exception("Error descargando adjuntos de Outlook: %s", exc)
     process_directory(config, state)
     show_upcoming_deadlines_popup(config.excel_path)
 

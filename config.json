@@ -8,6 +8,11 @@
   "openai_api_key": "REEMPLAZAR_API_KEY",
   "model": "gpt-5.4-nano",
   "request_timeout_seconds": 180,
+  "outlook": {
+    "enabled": true,
+    "user_email": "analistamjml@cge.cl",
+    "folder_name": "Oficios"
+  },
   "planner": {
     "enabled": true,
     "tenant_id": "REEMPLAZAR_TENANT_ID",
