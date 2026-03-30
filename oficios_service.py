@@ -146,6 +146,13 @@ class PlannerConfig:
 
 
 @dataclass
+class OutlookConfig:
+    enabled: bool = False
+    user_email: str = ""
+    folder_name: str = "Oficios"
+
+
+@dataclass
 class Config:
     watch_dir: Path
     excel_path: Path
@@ -158,6 +165,7 @@ class Config:
     model: str
     gerentes: Dict[str, Gerente]
     planner: PlannerConfig = field(default_factory=PlannerConfig)
+    outlook: OutlookConfig = field(default_factory=OutlookConfig)
     request_timeout_seconds: int = 180
     scan_extensions: tuple[str, ...] = (".pdf",)
 
@@ -184,6 +192,13 @@ def load_config(path: Path) -> Config:
         bucket_id=planner_raw.get("bucket_id", ""),
     )
 
+    outlook_raw = raw.get("outlook", {})
+    outlook = OutlookConfig(
+        enabled=outlook_raw.get("enabled", False),
+        user_email=outlook_raw.get("user_email", ""),
+        folder_name=outlook_raw.get("folder_name", "Oficios"),
+    )
+
     return Config(
         watch_dir=Path(raw["watch_dir"]),
         excel_path=Path(raw["excel_path"]),
@@ -196,6 +211,7 @@ def load_config(path: Path) -> Config:
         model=raw.get("model", "gpt-5.4-mini"),
         gerentes=gerentes,
         planner=planner,
+        outlook=outlook,
         request_timeout_seconds=int(raw.get("request_timeout_seconds", 180)),
     )
 
@@ -688,6 +704,121 @@ def sync_to_planner(config: Config, extracted: dict[str, Any], due_date: date) -
 
 
 # ---------------------------------------------------------------------------
+# Outlook attachment downloader
+# ---------------------------------------------------------------------------
+
+
+def find_outlook_folder_id(token: str, user_email: str, folder_name: str) -> Optional[str]:
+    """Busca el ID de una carpeta de correo por nombre."""
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/users/{user_email}/mailFolders"
+    params = {"$filter": f"displayName eq '{folder_name}'", "$top": "50"}
+    resp = requests.get(url, headers=headers, params=params, timeout=30)
+    if not resp.ok:
+        logging.error("Error listando carpetas de correo: %s — %s", resp.status_code, resp.text)
+        return None
+    folders = resp.json().get("value", [])
+    for f in folders:
+        if f.get("displayName") == folder_name:
+            return f["id"]
+    logging.warning("No se encontró la carpeta '%s' en el buzón de %s", folder_name, user_email)
+    return None
+
+
+def download_outlook_attachments(config: Config, state: dict[str, Any]) -> int:
+    """Descarga adjuntos PDF de la carpeta Outlook configurada. Retorna cantidad de archivos nuevos."""
+    if not config.outlook.enabled:
+        return 0
+
+    if not config.outlook.user_email:
+        logging.warning("Outlook habilitado pero falta user_email en config.")
+        return 0
+
+    token = get_planner_token(config.planner)
+    if not token:
+        logging.error("No se pudo obtener token para Outlook.")
+        return 0
+
+    folder_id = find_outlook_folder_id(token, config.outlook.user_email, config.outlook.folder_name)
+    if not folder_id:
+        return 0
+
+    processed_ids: set[str] = set(state.get("outlook_processed_ids", []))
+    headers = {"Authorization": f"Bearer {token}"}
+    user = config.outlook.user_email
+    saved = 0
+
+    page_size = 50
+    skip = 0
+    while True:
+        url = f"https://graph.microsoft.com/v1.0/users/{user}/mailFolders/{folder_id}/messages"
+        params = {
+            "$top": str(page_size),
+            "$skip": str(skip),
+            "$select": "id,subject,hasAttachments,receivedDateTime",
+            "$orderby": "receivedDateTime desc",
+        }
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        if not resp.ok:
+            logging.error("Error listando mensajes: %s — %s", resp.status_code, resp.text)
+            break
+
+        messages = resp.json().get("value", [])
+        if not messages:
+            break
+
+        all_already_processed = True
+        for msg in messages:
+            msg_id = msg["id"]
+            if msg_id in processed_ids:
+                continue
+            all_already_processed = False
+
+            if not msg.get("hasAttachments"):
+                processed_ids.add(msg_id)
+                continue
+
+            att_url = f"https://graph.microsoft.com/v1.0/users/{user}/messages/{msg_id}/attachments"
+            att_resp = requests.get(att_url, headers=headers, timeout=30)
+            if not att_resp.ok:
+                logging.error("Error obteniendo adjuntos del mensaje %s: %s", msg_id, att_resp.status_code)
+                continue
+
+            for att in att_resp.json().get("value", []):
+                if att.get("@odata.type") != "#microsoft.graph.fileAttachment":
+                    continue
+                name = att.get("name", "")
+                if not name.lower().endswith(".pdf"):
+                    continue
+                content_bytes = att.get("contentBytes")
+                if not content_bytes:
+                    continue
+
+                dest = config.watch_dir / name
+                if dest.exists():
+                    logging.info("Adjunto ya existe en disco, omitido: %s", name)
+                else:
+                    dest.write_bytes(base64.b64decode(content_bytes))
+                    logging.info("Adjunto descargado: %s (mensaje: %s)", name, msg.get("subject", ""))
+                    saved += 1
+
+            processed_ids.add(msg_id)
+
+        if all_already_processed:
+            break
+        skip += page_size
+
+    state["outlook_processed_ids"] = sorted(processed_ids)
+    save_state(config.processed_state_path, state)
+
+    if saved:
+        logging.info("Se descargaron %d adjunto(s) nuevos desde Outlook.", saved)
+    else:
+        logging.info("No hay adjuntos nuevos en Outlook.")
+    return saved
+
+
+# ---------------------------------------------------------------------------
 # Correcciones / aprendizaje
 # ---------------------------------------------------------------------------
 
@@ -1008,6 +1139,10 @@ def service_loop(config: Config) -> None:
 
         if (now.hour > hour or (now.hour == hour and now.minute >= minute)) and state.get("last_run_date") != today:
             logging.info("Ejecución diaria iniciada.")
+            try:
+                download_outlook_attachments(config, state)
+            except Exception as exc:
+                logging.exception("Error descargando adjuntos de Outlook: %s", exc)
             process_directory(config, state)
             show_upcoming_deadlines_popup(config.excel_path)
             state["last_run_date"] = today
@@ -1019,6 +1154,10 @@ def service_loop(config: Config) -> None:
 
 def run_once(config: Config) -> None:
     state = load_state(config.processed_state_path)
+    try:
+        download_outlook_attachments(config, state)
+    except Exception as exc:
+        logging.exception("Error descargando adjuntos de Outlook: %s", exc)
     process_directory(config, state)
     show_upcoming_deadlines_popup(config.excel_path)
 
