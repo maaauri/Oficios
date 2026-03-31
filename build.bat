@@ -12,22 +12,22 @@ pip install -r requirements.txt
 echo.
 echo [2/3] Compilando con PyInstaller...
 python -m PyInstaller ^
-  --onefile ^
+  --onedir ^
   --windowed ^
   --name "GestionOficios" ^
   oficios_service.py
 
-:: Copiar archivos necesarios al directorio dist
+:: Copiar archivos necesarios al directorio dist/GestionOficios
 echo.
 echo [3/3] Copiando archivos al directorio dist...
-copy config.json dist\config.json
+copy config.json dist\GestionOficios\config.json
 if exist informe_multa_template.docx (
-    copy informe_multa_template.docx dist\informe_multa_template.docx
+    copy informe_multa_template.docx dist\GestionOficios\informe_multa_template.docx
 )
 
 echo.
 echo ============================================
-echo  Listo! El ejecutable esta en: dist\GestionOficios.exe
+echo  Listo! El ejecutable esta en: dist\GestionOficios\GestionOficios.exe
 echo  Copia tambien el archivo config.json junto al .exe
 echo ============================================
 pause
