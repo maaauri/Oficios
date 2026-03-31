@@ -8,10 +8,10 @@
   "openai_api_key": "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",
   "model": "gpt-5.4-nano",
   "request_timeout_seconds": 180,
-  "outlook": {
-    "enabled": true,
-    "user_email": "analistamjml@cge.cl",
-    "folder_name": "Oficios"
+  "informe_multa": {
+    "api_key": "",
+    "model": "gpt-4o-mini",
+    "output_dir": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Informes"
   },
   "planner": {
     "enabled": true,
