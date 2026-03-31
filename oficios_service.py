@@ -45,6 +45,11 @@ EXPECTED_COLUMNS = [
     "Multa",
 ]
 
+AREAS_VALIDAS = [
+    "PMGD", "Conexiones", "Lectura",
+    "Servicio al Cliente", "Cobranza", "Pérdidas",
+]
+
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -244,8 +249,8 @@ class Config:
     model: str
     gerentes: Dict[str, Gerente]
     planner: PlannerConfig = field(default_factory=PlannerConfig)
-    informe_multa_api_key: str = "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"
-    informe_multa_model: str = "gpt-5.4"
+    informe_multa_api_key: str = ""
+    informe_multa_model: str = "claude-sonnet-4-20250514"
     informe_output_dir: Path = field(default_factory=lambda: Path("."))
     request_timeout_seconds: int = 180
     scan_extensions: tuple[str, ...] = (".pdf",)
@@ -289,8 +294,8 @@ def load_config(path: Path) -> Config:
         model=raw.get("model", "gpt-5.4-mini"),
         gerentes=gerentes,
         planner=planner,
-        informe_multa_api_key=informe_raw.get("api_key", "") or api_key,
-        informe_multa_model=informe_raw.get("model", "gpt-5.4"),
+        informe_multa_api_key=informe_raw.get("api_key", ""),
+        informe_multa_model=informe_raw.get("model", "claude-sonnet-4-20250514"),
         informe_output_dir=informe_output_dir,
         request_timeout_seconds=int(raw.get("request_timeout_seconds", 180)),
     )
@@ -767,39 +772,62 @@ def is_multa(nro: str, concepto: str, corrections: List[Dict[str, Any]]) -> bool
     return bool(_MULTA_KEYWORDS.search(concepto))
 
 
-def call_openai_informe_multa(config: Config, pdf_path: Path) -> Dict[str, Any]:
+def call_anthropic_informe_multa(config: Config, pdf_path: Path) -> Dict[str, Any]:
+    """Llama a la API de Anthropic (Claude) para extraer datos del informe de multa."""
     pdf_b64 = base64.b64encode(pdf_path.read_bytes()).decode("ascii")
+
+    schema_instruction = (
+        "Responde SOLO con un JSON válido que cumpla exactamente este schema:\n"
+        + json.dumps(INFORME_MULTA_SCHEMA, ensure_ascii=False, indent=2)
+    )
+
     payload = {
         "model": config.informe_multa_model,
-        "max_output_tokens": 2000,
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "informe_multa_extract",
-                "strict": True,
-                "schema": INFORME_MULTA_SCHEMA,
+        "max_tokens": 4096,
+        "system": INFORME_MULTA_PROMPT + "\n\n" + schema_instruction,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf_b64,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": f"Analiza este PDF de multa SEC. Archivo: {pdf_path.name}",
+                    },
+                ],
             }
-        },
-        "input": [
-            {"role": "developer", "content": [{"type": "input_text", "text": INFORME_MULTA_PROMPT}]},
-            {"role": "user", "content": [
-                {"type": "input_text", "text": f"Analiza este PDF de multa SEC. Archivo: {pdf_path.name}"},
-                {"type": "input_file", "filename": pdf_path.name,
-                 "file_data": f"data:application/pdf;base64,{pdf_b64}"},
-            ]},
         ],
     }
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {config.informe_multa_api_key}",
+        "x-api-key": config.informe_multa_api_key,
+        "anthropic-version": "2023-06-01",
     }
-    resp = requests.post("https://api.openai.com/v1/responses", headers=headers,
+    resp = requests.post("https://api.anthropic.com/v1/messages", headers=headers,
                          json=payload, timeout=config.request_timeout_seconds)
     if not resp.ok:
-        logging.error("OpenAI informe multa error %s: %s", resp.status_code, resp.text)
+        logging.error("Anthropic informe multa error %s: %s", resp.status_code, resp.text)
         resp.raise_for_status()
-    output_text = extract_output_text(resp.json())
-    return json.loads(output_text)
+
+    data = resp.json()
+    text_content = ""
+    for block in data.get("content", []):
+        if block.get("type") == "text":
+            text_content += block.get("text", "")
+
+    text_content = text_content.strip()
+    if text_content.startswith("```"):
+        text_content = re.sub(r"^```(?:json)?\s*", "", text_content)
+        text_content = re.sub(r"\s*```$", "", text_content)
+
+    return json.loads(text_content)
 
 
 def _replace_in_paragraph(para: Any, replacements: Dict[str, str]) -> None:
@@ -958,7 +986,7 @@ def ask_and_generate_informe(config: Config, pdf_path: Path,
         return
     output_path = config.informe_output_dir / f"Informe_Multa_Nro{nro}.docx"
     try:
-        informe_data = call_openai_informe_multa(config, pdf_path)
+        informe_data = call_anthropic_informe_multa(config, pdf_path)
         ok = fill_informe_multa(config, informe_data, nro, output_path)
         if ok:
             messagebox.showinfo(
@@ -1173,6 +1201,38 @@ def build_corrections_prompt(corrections: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def save_corrections(path: Path, corrections: List[Dict[str, Any]]) -> None:
+    ensure_parent(path)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(corrections, f, ensure_ascii=False, indent=2)
+
+
+def update_excel_row(excel_path: Path, nro: str, categoria: str,
+                     updates: Dict[str, Any], gerentes: Dict[str, Gerente]) -> None:
+    """Actualiza una fila existente en el Excel según Nro + Categoría."""
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    for row in ws.iter_rows(min_row=2):
+        cell_nro = str(row[0].value or "").strip()
+        cell_cat = str(row[1].value or "").strip()
+        if cell_nro == nro and cell_cat == categoria:
+            if "gerencia_responsable" in updates:
+                new_area = updates["gerencia_responsable"]
+                row[5].value = new_area  # col F = Gerencia Responsable
+                gerente = gerentes.get(new_area, Gerente(nombre=""))
+                row[6].value = gerente.nombre  # col G = Gerente Responsable
+            if "plazo_respuesta" in updates:
+                p = parse_date_yyyy_mm_dd(updates["plazo_respuesta"])
+                if p:
+                    row[8].value = p  # col I = Plazo Respuesta
+                    row[8].number_format = "DD-MM-YYYY"
+            if "es_multa" in updates:
+                row[9].value = "Sí" if updates["es_multa"] else ""  # col J = Multa
+            wb.save(excel_path)
+            return
+    wb.close()
+
+
 def show_revaluar_gui(config: Config) -> None:
     excel_path = config.excel_path
     if not excel_path.exists():
@@ -1294,13 +1354,13 @@ def show_revaluar_gui(config: Config) -> None:
                 "valor_nuevo": (new_multa == "si"),
                 "concepto": rd["concepto"],
             })
+            updates["es_multa"] = (new_multa == "si")
 
         if not updates and new_multa == "(sin cambio)":
             messagebox.showinfo("Revaloración", "No se indicó ninguna corrección.")
             return
 
-        if updates:
-            update_excel_row(excel_path, rd["nro"], rd["categoria"], updates, config.gerentes)
+        update_excel_row(excel_path, rd["nro"], rd["categoria"], updates, config.gerentes)
         save_corrections(config.corrections_path, corrections)
 
         # Actualizar listbox
@@ -1488,13 +1548,90 @@ def reset_state(config: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Estadísticas
+# ---------------------------------------------------------------------------
+
+def show_estadisticas_gui(config: Config) -> None:
+    """Muestra una ventana con estadísticas agregadas del Excel."""
+    excel_path = config.excel_path
+    if not excel_path.exists():
+        messagebox.showinfo("Estadísticas", "No existe el archivo Excel.")
+        return
+
+    wb = load_workbook(excel_path, read_only=True)
+    ws = wb.active
+
+    total = 0
+    categorias: Counter = Counter()
+    areas: Counter = Counter()
+    multas = 0
+    fechas: List[date] = []
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        nro = str(row[0] or "").strip()
+        if not nro:
+            continue
+        total += 1
+        categorias[str(row[1] or "Sin categoría")] += 1
+        areas[str(row[5] or "Sin área")] += 1
+        if str(row[9] or "").strip().lower() in ("sí", "si"):
+            multas += 1
+        fecha = row[2]
+        if hasattr(fecha, "date"):
+            fecha = fecha.date()
+        if isinstance(fecha, date):
+            fechas.append(fecha)
+    wb.close()
+
+    if total == 0:
+        messagebox.showinfo("Estadísticas", "No hay oficios registrados en el Excel.")
+        return
+
+    lines = [f"Total de oficios registrados: {total}", ""]
+    lines.append("Por categoría:")
+    for cat, n in sorted(categorias.items(), key=lambda x: -x[1]):
+        pct = n * 100 / total
+        lines.append(f"  {cat}: {n}  ({pct:.0f}%)")
+    lines.append("")
+    lines.append("Por área responsable:")
+    for area, n in sorted(areas.items(), key=lambda x: -x[1]):
+        pct = n * 100 / total
+        lines.append(f"  {area}: {n}  ({pct:.0f}%)")
+    lines.append("")
+    lines.append(f"Multas / formulación de cargos: {multas}")
+    if fechas:
+        lines.append("")
+        lines.append(f"Rango de fechas: {min(fechas).strftime('%d-%m-%Y')} — {max(fechas).strftime('%d-%m-%Y')}")
+
+    win = tk.Toplevel()
+    win.title("Estadísticas de Oficios")
+    win.geometry("500x420")
+    win.resizable(True, True)
+
+    header = tk.Frame(win, bg="#1F4E78", height=40)
+    header.pack(fill=tk.X)
+    header.pack_propagate(False)
+    tk.Label(header, text="Estadísticas de Oficios Analizados",
+             bg="#1F4E78", fg="white", font=("Arial", 12, "bold")).pack(expand=True)
+
+    text = tk.Text(win, font=("Consolas", 10), wrap=tk.WORD, padx=10, pady=10)
+    text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    text.insert(tk.END, "\n".join(lines))
+    text.config(state=tk.DISABLED)
+
+    tk.Button(win, text="Cerrar", command=win.destroy,
+              bg="#1F4E78", fg="white", font=("Arial", 10, "bold"),
+              width=15).pack(pady=8)
+
+
+# ---------------------------------------------------------------------------
 # GUI principal
 # ---------------------------------------------------------------------------
 
 def launch_main_gui(config: Config) -> None:
     root = tk.Tk()
     root.title("Gestión de Oficios CGE")
-    root.geometry("440x320")
+    root.geometry("440x380")
     root.resizable(False, False)
 
     # Encabezado
@@ -1583,6 +1720,14 @@ def launch_main_gui(config: Config) -> None:
                              command=revaluar_action,
                              bg="#375623", fg="white", **btn_style)
     btn_revaluar.pack(pady=6)
+
+    def estadisticas_action() -> None:
+        show_estadisticas_gui(config)
+
+    btn_stats = tk.Button(btn_frame, text="📊   Estadísticas",
+                          command=estadisticas_action,
+                          bg="#5B2C6F", fg="white", **btn_style)
+    btn_stats.pack(pady=6)
 
     status_bar = tk.Label(root, textvariable=status_var,
                           bd=1, relief=tk.SUNKEN, anchor=tk.W,

@@ -9,8 +9,8 @@
   "model": "gpt-5.4-nano",
   "request_timeout_seconds": 180,
   "informe_multa": {
-    "api_key": "",
-    "model": "gpt-4o-mini",
+    "api_key": "REEMPLAZAR_ANTHROPIC_API_KEY",
+    "model": "claude-sonnet-4-20250514",
     "output_dir": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Informes"
   },
   "planner": {
