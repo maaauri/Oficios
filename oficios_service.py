@@ -42,6 +42,7 @@ EXPECTED_COLUMNS = [
     "Gerente Responsable",
     "Equipo",
     "Plazo Respuesta",
+    "Multa",
 ]
 
 SCHEMA = {
@@ -224,6 +225,13 @@ class PlannerConfig:
 
 
 @dataclass
+class OutlookConfig:
+    enabled: bool = False
+    user_email: str = ""
+    folder_name: str = "Oficios"
+
+
+@dataclass
 class Config:
     watch_dir: Path
     excel_path: Path
@@ -236,8 +244,8 @@ class Config:
     model: str
     gerentes: Dict[str, Gerente]
     planner: PlannerConfig = field(default_factory=PlannerConfig)
-    informe_multa_api_key: str = ""
-    informe_multa_model: str = "gpt-4o-mini"
+    informe_multa_api_key: str = "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"
+    informe_multa_model: str = "gpt-5.4"
     informe_output_dir: Path = field(default_factory=lambda: Path("."))
     request_timeout_seconds: int = 180
     scan_extensions: tuple[str, ...] = (".pdf",)
@@ -282,7 +290,7 @@ def load_config(path: Path) -> Config:
         gerentes=gerentes,
         planner=planner,
         informe_multa_api_key=informe_raw.get("api_key", "") or api_key,
-        informe_multa_model=informe_raw.get("model", "gpt-4o-mini"),
+        informe_multa_model=informe_raw.get("model", "gpt-5.4"),
         informe_output_dir=informe_output_dir,
         request_timeout_seconds=int(raw.get("request_timeout_seconds", 180)),
     )
@@ -332,6 +340,7 @@ def create_excel_template(path: Path, sheet_name: str = "Oficios") -> None:
         "G": 26,
         "H": 14,
         "I": 18,
+        "J": 10,
     }
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
@@ -352,10 +361,33 @@ def ensure_excel_exists(path: Path) -> None:
     wb = load_workbook(path)
     ws = wb.active
     existing = [ws.cell(row=1, column=i).value for i in range(1, len(EXPECTED_COLUMNS) + 1)]
-    if existing != EXPECTED_COLUMNS:
-        raise ValueError(
-            f"El Excel existente no tiene los encabezados esperados. Esperado: {EXPECTED_COLUMNS} | Actual: {existing}"
-        )
+    if existing == EXPECTED_COLUMNS:
+        return
+
+    # Migrar: si solo falta la columna "Multa" al final, agregarla automáticamente
+    old_columns = EXPECTED_COLUMNS[:-1]
+    existing_old = [ws.cell(row=1, column=i).value for i in range(1, len(old_columns) + 1)]
+    if existing_old == old_columns:
+        col_idx = len(EXPECTED_COLUMNS)
+        header_cell = ws.cell(row=1, column=col_idx, value="Multa")
+        header_cell.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+        header_cell.font = Font(color="FFFFFF", bold=True)
+        header_cell.alignment = Alignment(horizontal="center", vertical="center")
+        header_cell.border = Border(bottom=Side(style="thin", color="D9E2F3"))
+        ws.column_dimensions["J"].width = 10
+        # Rellenar multa para filas existentes según concepto
+        for row_idx in range(2, ws.max_row + 1):
+            concepto = str(ws.cell(row=row_idx, column=4).value or "")
+            if concepto and es_multa_o_cargos(concepto):
+                cell = ws.cell(row=row_idx, column=col_idx, value="Sí")
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+        wb.save(path)
+        logging.info("Columna 'Multa' agregada al Excel existente.")
+        return
+
+    raise ValueError(
+        f"El Excel existente no tiene los encabezados esperados. Esperado: {EXPECTED_COLUMNS} | Actual: {existing}"
+    )
 
 
 def load_state(path: Path) -> dict[str, Any]:
@@ -516,16 +548,20 @@ def map_row(extracted: dict[str, Any], gerentes: Dict[str, Gerente]) -> List[Any
     fecha_oficio = parse_date_yyyy_mm_dd(extracted.get("fecha_oficio"))
     plazo = compute_due_date(extracted)
 
+    concepto = extracted.get("concepto") or ""
+    multa = "Sí" if es_multa_o_cargos(concepto) else ""
+
     return [
         extracted.get("numero_oficio") or "",
         extracted.get("categoria") or "",
         fecha_oficio,
-        extracted.get("concepto") or "",
+        concepto,
         "Comercial y Servicio al Cliente",
         gerencia or "",
         gerente.nombre,
         "",
         plazo,
+        multa,
     ]
 
 
@@ -570,6 +606,8 @@ def append_to_excel(excel_path: Path, row: List[Any]) -> bool:
         if col_idx in (3, 9):
             cell.number_format = "DD-MM-YYYY"
             cell.alignment = Alignment(horizontal="center")
+        elif col_idx == 10:
+            cell.alignment = Alignment(horizontal="center", vertical="center")
         elif col_idx in (1, 2, 5, 6, 7, 8):
             cell.alignment = Alignment(vertical="center")
         else:
@@ -991,23 +1029,129 @@ def sync_to_planner(config: Config, extracted: dict[str, Any], due_date: date) -
 
 
 # ---------------------------------------------------------------------------
-# Correcciones / aprendizaje
+# Outlook attachment downloader
 # ---------------------------------------------------------------------------
 
-AREAS_VALIDAS = ["PMGD", "Conexiones", "Lectura", "Servicio al Cliente", "Cobranza", "Pérdidas"]
 
+def find_outlook_folder_id(token: str, user_email: str, folder_name: str) -> Optional[str]:
+    """Busca el ID de una carpeta de correo por nombre."""
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/users/{user_email}/mailFolders"
+    params = {"$filter": f"displayName eq '{folder_name}'", "$top": "50"}
+    resp = requests.get(url, headers=headers, params=params, timeout=30)
+    if not resp.ok:
+        logging.error("Error listando carpetas de correo: %s — %s", resp.status_code, resp.text)
+        return None
+    folders = resp.json().get("value", [])
+    for f in folders:
+        if f.get("displayName") == folder_name:
+            return f["id"]
+    logging.warning("No se encontró la carpeta '%s' en el buzón de %s", folder_name, user_email)
+    return None
+
+
+def download_outlook_attachments(config: Config, state: dict[str, Any]) -> int:
+    """Descarga adjuntos PDF de la carpeta Outlook configurada. Retorna cantidad de archivos nuevos."""
+    if not config.outlook.enabled:
+        return 0
+
+    if not config.outlook.user_email:
+        logging.warning("Outlook habilitado pero falta user_email en config.")
+        return 0
+
+    token = get_planner_token(config.planner)
+    if not token:
+        logging.error("No se pudo obtener token para Outlook.")
+        return 0
+
+    folder_id = find_outlook_folder_id(token, config.outlook.user_email, config.outlook.folder_name)
+    if not folder_id:
+        return 0
+
+    processed_ids: set[str] = set(state.get("outlook_processed_ids", []))
+    headers = {"Authorization": f"Bearer {token}"}
+    user = config.outlook.user_email
+    saved = 0
+
+    page_size = 50
+    skip = 0
+    while True:
+        url = f"https://graph.microsoft.com/v1.0/users/{user}/mailFolders/{folder_id}/messages"
+        params = {
+            "$top": str(page_size),
+            "$skip": str(skip),
+            "$select": "id,subject,hasAttachments,receivedDateTime",
+            "$orderby": "receivedDateTime desc",
+        }
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        if not resp.ok:
+            logging.error("Error listando mensajes: %s — %s", resp.status_code, resp.text)
+            break
+
+        messages = resp.json().get("value", [])
+        if not messages:
+            break
+
+        all_already_processed = True
+        for msg in messages:
+            msg_id = msg["id"]
+            if msg_id in processed_ids:
+                continue
+            all_already_processed = False
+
+            if not msg.get("hasAttachments"):
+                processed_ids.add(msg_id)
+                continue
+
+            att_url = f"https://graph.microsoft.com/v1.0/users/{user}/messages/{msg_id}/attachments"
+            att_resp = requests.get(att_url, headers=headers, timeout=30)
+            if not att_resp.ok:
+                logging.error("Error obteniendo adjuntos del mensaje %s: %s", msg_id, att_resp.status_code)
+                continue
+
+            for att in att_resp.json().get("value", []):
+                if att.get("@odata.type") != "#microsoft.graph.fileAttachment":
+                    continue
+                name = att.get("name", "")
+                if not name.lower().endswith(".pdf"):
+                    continue
+                content_bytes = att.get("contentBytes")
+                if not content_bytes:
+                    continue
+
+                dest = config.watch_dir / name
+                if dest.exists():
+                    logging.info("Adjunto ya existe en disco, omitido: %s", name)
+                else:
+                    dest.write_bytes(base64.b64decode(content_bytes))
+                    logging.info("Adjunto descargado: %s (mensaje: %s)", name, msg.get("subject", ""))
+                    saved += 1
+
+            processed_ids.add(msg_id)
+
+        if all_already_processed:
+            break
+        skip += page_size
+
+    state["outlook_processed_ids"] = sorted(processed_ids)
+    save_state(config.processed_state_path, state)
+
+    if saved:
+        logging.info("Se descargaron %d adjunto(s) nuevos desde Outlook.", saved)
+    else:
+        logging.info("No hay adjuntos nuevos en Outlook.")
+    return saved
+
+
+# ---------------------------------------------------------------------------
+# Correcciones / aprendizaje
+# ---------------------------------------------------------------------------
 
 def load_corrections(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def save_corrections(path: Path, corrections: List[Dict[str, Any]]) -> None:
-    ensure_parent(path)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(corrections, f, ensure_ascii=False, indent=2)
 
 
 def build_corrections_prompt(corrections: List[Dict[str, Any]]) -> str:
@@ -1027,29 +1171,6 @@ def build_corrections_prompt(corrections: List[Dict[str, Any]]) -> str:
         "\nConsidera estas correcciones como referencia para clasificar oficios similares."
     )
     return "\n".join(lines)
-
-
-def update_excel_row(excel_path: Path, nro: str, categoria: str, updates: Dict[str, Any], gerentes: Dict[str, Gerente]) -> bool:
-    wb = load_workbook(excel_path)
-    ws = wb.active
-    for row_idx in range(2, ws.max_row + 1):
-        cell_nro = str(ws.cell(row=row_idx, column=1).value or "").strip()
-        cell_cat = str(ws.cell(row=row_idx, column=2).value or "").strip()
-        if cell_nro == nro and cell_cat == categoria:
-            if "gerencia_responsable" in updates:
-                new_gerencia = updates["gerencia_responsable"]
-                ws.cell(row=row_idx, column=6, value=new_gerencia)
-                gerente = gerentes.get(new_gerencia, Gerente(nombre=""))
-                ws.cell(row=row_idx, column=7, value=gerente.nombre)
-            if "plazo_respuesta" in updates:
-                new_plazo = parse_date_yyyy_mm_dd(updates["plazo_respuesta"])
-                if new_plazo:
-                    cell = ws.cell(row=row_idx, column=9, value=new_plazo)
-                    cell.number_format = "DD-MM-YYYY"
-                    cell.alignment = Alignment(horizontal="center")
-            wb.save(excel_path)
-            return True
-    return False
 
 
 def show_revaluar_gui(config: Config) -> None:
