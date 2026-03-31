@@ -11,12 +11,10 @@ pip install -r requirements.txt
 :: Crear el ejecutable con PyInstaller
 echo.
 echo [2/3] Compilando con PyInstaller...
-pyinstaller ^
+python -m PyInstaller ^
   --onefile ^
   --windowed ^
   --name "GestionOficios" ^
-  --icon NONE ^
-  --add-data "config.json;." ^
   oficios_service.py
 
 :: Copiar archivos necesarios al directorio dist
