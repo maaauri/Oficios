@@ -258,7 +258,15 @@ class Config:
 
 def load_config(path: Path) -> Config:
     with path.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
+        try:
+            raw = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"El archivo de configuración tiene un error de formato JSON:\n"
+                f"  Archivo: {path}\n"
+                f"  Detalle: {exc}\n\n"
+                f"Revise que no haya comas sobrantes, comillas sin cerrar o caracteres inválidos."
+            ) from exc
 
     gerentes: Dict[str, Gerente] = {}
     for area, item in raw.get("gerentes", {}).items():
