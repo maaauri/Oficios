@@ -1596,7 +1596,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Gestión de Oficios CGE — abre la interfaz gráfica si no se pasan argumentos."
     )
-    parser.add_argument("--config", default="config.json", help="Ruta al archivo de configuración JSON.")
+    default_config = get_base_dir() / "config.json"
+    parser.add_argument("--config", default=str(default_config), help="Ruta al archivo de configuración JSON.")
     parser.add_argument("--run-once", action="store_true", help="Ejecuta una sola vez y termina (sin GUI).")
     parser.add_argument("--service", action="store_true", help="Modo servicio continuo (sin GUI).")
     parser.add_argument(
