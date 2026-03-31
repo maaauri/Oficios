@@ -1,33 +1,37 @@
-# Servicio de procesamiento de oficios PDF
+# Gestión de Oficios CGE
+
+## Uso normal (interfaz gráfica)
+
+Al ejecutar el programa sin argumentos, se abre una ventana con tres botones:
+
+| Botón | Acción |
+|-------|--------|
+| **▶ Ejecutar una vez** | Procesa todos los PDFs nuevos de la carpeta y llena el Excel |
+| **↺ Resetear valores** | Borra la memoria de PDFs procesados para que se vuelvan a analizar |
+| **✎ Revaluar oficio** | Abre el formulario de corrección de oficios ya procesados |
+
+```
+python oficios_service.py
+```
+
+O bien, ejecutar directamente el `.exe` generado por el compilador.
+
+---
 
 ## Qué hace
 - Revisa una carpeta local con PDFs que inicien con los prefijos **OC**, **Ord.** o **RE**.
 - Elimina automáticamente copias de archivos (ej: `archivo (1).pdf`, `archivo - copia.pdf`).
 - Llama a la API de OpenAI para extraer metadatos del documento:
-  - número de oficio
-  - categoría (Oficio circular, Oficio ordinario o Resolución exenta)
-  - fecha de oficio
-  - concepto
-  - gerencia responsable
-  - plazo respuesta
-  - plazo relativo (si el documento dice, por ejemplo, "10 días hábiles")
-- Agrega una fila al Excel con esta estructura:
-  - Nro
-  - Categoría
-  - Fecha de Oficio
-  - Concepto
-  - Dirección Responsable
-  - Gerencia Responsable
-  - Gerente Responsable
-  - Equipo
-  - Plazo Respuesta
-- Crea tareas en **Microsoft Planner** para oficios con plazo vigente (no vencido).
-- Muestra un **popup de resumen** al finalizar con la cantidad de PDFs procesados, desglosados por categoría y área. Si algún oficio trata sobre **multas o formulación de cargos**, se destacan en el resumen con una alerta visual.
-- Muestra un **popup de alerta** con los oficios que vencen en los próximos 5 días, indicando número, categoría, fecha, área y gerente responsable.
+  - número de oficio, categoría, fecha, concepto, gerencia responsable, plazo
+- Agrega una fila al Excel con estructura predefinida.
+- Crea tareas en **Microsoft Planner** para oficios con plazo vigente.
+- Muestra un **popup de resumen** al finalizar, destacando multas detectadas.
+- Muestra un **popup de alerta** con oficios que vencen en los próximos 5 días.
+- Si detecta una **multa o formulación de cargos**, pregunta si se desea generar el **Informe de Zona por Multa SEC** en formato Word.
+
+---
 
 ## Categorías y prefijos de archivo
-
-Solo se procesan PDFs cuyo nombre comience con uno de estos prefijos:
 
 | Prefijo | Categoría         |
 |---------|--------------------|
@@ -35,58 +39,56 @@ Solo se procesan PDFs cuyo nombre comience con uno de estos prefijos:
 | `Ord.`  | Oficio ordinario   |
 | `RE`    | Resolución exenta  |
 
-Los archivos que no cumplan con estos prefijos se omiten y se registra el motivo en el log.
+Los archivos sin estos prefijos se omiten y se registra el motivo en el log.
 
-## Detección de multas y formulación de cargos
+---
 
-El script analiza el concepto de cada oficio procesado buscando palabras clave como "multa", "formulación de cargos", "sanción" o "cargo sancionatorio". Si detecta alguno:
-- Se destaca en el popup de resumen con el icono de advertencia.
-- El título del popup indica cuántas multas se detectaron.
-- Se listan los oficios afectados con su número, categoría, área y concepto.
+## Detección de multas
 
-## Cálculo de plazo relativo
-Si el PDF trae una fecha exacta de vencimiento, el script usa esa fecha.
+El sistema detecta automáticamente multas y formulación de cargos por palabras clave en el concepto (`multa`, `formulación de cargos`, `sanción`, `cargo sancionatorio`).
 
-Si no trae una fecha exacta pero sí un plazo relativo, por ejemplo:
-- `10 días hábiles`
-- `5 días corridos`
-- `30 días`
+Cuando se detecta una multa, el popup de resumen lo indica con alerta visual y, al finalizar el procesamiento, el sistema **pregunta si se desea generar el Informe de Zona por Multa SEC**.
 
-el script calcula `Plazo Respuesta` usando la **fecha del oficio** (`Fecha de Oficio`) como base.
+Si el usuario acepta, se llama a OpenAI con un modelo configurable (por defecto `gpt-4o-mini`) para extraer los campos del informe y se genera automáticamente un archivo Word en la carpeta configurada en `informe_multa.output_dir`.
 
-### Regla actual
-- `días hábiles`: excluye sábado y domingo.
-- `días corridos`: suma días calendario.
-- Si el texto dice solo `días` sin aclaración, se trata como `días corridos`.
-- Aún **no** descuenta feriados de Chile.
+### Template Word del informe
 
-## Revaloración (correcciones y aprendizaje)
+El archivo `informe_multa_template.docx` debe estar en el mismo directorio que el ejecutable. Si no existe, se crea automáticamente con la estructura del Informe de Zona por Multa SEC (secciones 1–7).
 
-Si la IA clasificó un oficio con el área o plazo incorrecto, puedes corregirlo con:
+El template usa placeholders `{{CAMPO}}` que se reemplazan con la información extraída del PDF.
+
+---
+
+## Revaloración de oficios (correcciones y aprendizaje)
 
 ```bash
-python oficios_service.py --config config.json --revaluar
+python oficios_service.py --revaluar
 ```
 
-Esto abre una **interfaz gráfica** donde puedes:
-1. Seleccionar un oficio de la lista.
-2. Cambiar el **área responsable** (dropdown con las 5 áreas válidas).
-3. Cambiar el **plazo de respuesta** (formato DD-MM-YYYY).
-4. Guardar la corrección.
+Abre una interfaz gráfica donde puedes corregir:
+- **Área responsable** (dropdown con las 6 áreas válidas)
+- **Plazo de respuesta** (formato DD-MM-YYYY)
+- **¿Es multa?** (Sí / No / sin cambio)
 
-Las correcciones se almacenan en `corrections.json` y se usan como **ejemplos de aprendizaje** en futuras ejecuciones. El prompt de OpenAI incluye las últimas 20 correcciones como referencia para que el modelo mejore su clasificación en oficios similares.
+Las correcciones se guardan en `corrections.json` y se usan como **ejemplos de aprendizaje** en el prompt de OpenAI para mejorar futuras clasificaciones.
 
-Las correcciones también actualizan el Excel inmediatamente.
+---
+
+## Cálculo de plazo relativo
+
+| Tipo | Regla |
+|------|-------|
+| `días hábiles` | Excluye sábado y domingo |
+| `días corridos` | Suma días calendario |
+| `días` (sin aclaración) | Se trata como `días corridos` |
+
+> Los feriados de Chile no se descuentan actualmente.
+
+---
 
 ## Integración con Microsoft Planner
 
-El script puede crear tareas automáticamente en Microsoft Planner para cada oficio con plazo de respuesta vigente.
-
-### Requisitos
-1. Registrar una aplicación en **Azure AD** (portal.azure.com > App registrations).
-2. Otorgar el permiso `Tasks.ReadWrite.All` de tipo Application.
-3. Crear un client secret.
-4. Configurar la sección `planner` en `config.json`:
+Se crean tareas automáticamente en Planner para oficios con plazo vigente.
 
 ```json
 "planner": {
@@ -99,70 +101,90 @@ El script puede crear tareas automáticamente en Microsoft Planner para cada ofi
 }
 ```
 
-Si `enabled` es `false`, la integración se desactiva y el script funciona sin Planner.
+Requiere una app registrada en **Azure AD** con permiso `Tasks.ReadWrite.All`.
+
+---
 
 ## Archivos
-- `oficios_service.py`: servicio principal.
-- `config.json`: archivo de configuración.
-- `corrections.json`: correcciones del usuario (generado automáticamente por `--revaluar`).
-- `requirements.txt`: dependencias (`requests`, `openpyxl`, `msal`).
 
-## Configuración
-1. Edita `config.json` con:
-   - rutas de carpeta de entrada y salida
-   - nombres de gerentes
-   - `openai_api_key`
-   - sección `planner` (opcional)
-2. Crea la carpeta de entrada para los PDFs.
-3. Crea la carpeta de salida del Excel y logs.
+| Archivo | Descripción |
+|---------|-------------|
+| `oficios_service.py` | Servicio principal |
+| `config.json` | Configuración |
+| `corrections.json` | Correcciones del usuario (generado automáticamente) |
+| `informe_multa_template.docx` | Template Word del informe de multa |
+| `requirements.txt` | Dependencias Python |
+| `build.bat` | Script para compilar el ejecutable en Windows |
+
+---
 
 ## Instalación
+
 ```bash
 pip install -r requirements.txt
 ```
 
-## Comandos disponibles
+---
 
-### Crear plantilla Excel
-```bash
-python oficios_service.py --config config.json --create-template
+## Compilar el ejecutable (.exe)
+
+```bat
+build.bat
 ```
 
-### Procesar una sola vez
-```bash
-python oficios_service.py --config config.json --run-once
+Genera `dist\GestionOficios.exe`. Copia también `config.json` e `informe_multa_template.docx` en la misma carpeta que el `.exe`.
+
+---
+
+## Comandos de línea de comandos
+
+| Comando | Descripción |
+|---------|-------------|
+| `python oficios_service.py` | Abre la interfaz gráfica (por defecto) |
+| `python oficios_service.py --run-once` | Procesa una vez sin GUI |
+| `python oficios_service.py --service` | Modo servicio continuo sin GUI |
+| `python oficios_service.py --reset` | Resetea la memoria de PDFs procesados |
+| `python oficios_service.py --revaluar` | Abre el formulario de revaloración |
+| `python oficios_service.py --create-template` | Crea la plantilla Excel |
+
+---
+
+## Configuración (`config.json`)
+
+```json
+{
+  "watch_dir": "ruta/carpeta/pdfs",
+  "excel_path": "ruta/oficios.xlsx",
+  "openai_api_key": "sk-...",
+  "model": "gpt-4o-mini",
+  "informe_multa": {
+    "api_key": "",
+    "model": "gpt-4o-mini",
+    "output_dir": "ruta/informes"
+  },
+  "gerentes": {
+    "PMGD": {"nombre": "Nombre", "email": ""},
+    "Conexiones": {"nombre": "Nombre", "email": ""},
+    "Lectura": {"nombre": "Nombre", "email": ""},
+    "Servicio al Cliente": {"nombre": "Nombre", "email": ""},
+    "Cobranza": {"nombre": "Nombre", "email": ""},
+    "Pérdidas": {"nombre": "Nombre", "email": ""}
+  }
+}
 ```
 
-### Modo servicio continuo
-```bash
-python oficios_service.py --config config.json
-```
-El proceso queda corriendo y ejecuta una vez por día a la hora programada.
+> Si `informe_multa.api_key` está vacío, se usa la misma `openai_api_key` principal.
 
-### Resetear memoria de PDFs procesados
-```bash
-python oficios_service.py --config config.json --reset
-```
-Borra los hashes almacenados para que todos los PDFs se reprocesen en la siguiente ejecución.
-
-### Revaloración de oficios
-```bash
-python oficios_service.py --config config.json --revaluar
-```
-Abre una interfaz gráfica para corregir el área responsable o el plazo de respuesta de oficios ya procesados. Las correcciones alimentan el aprendizaje del modelo.
-
-## Recomendación para Windows
-Si no quieres dejar una terminal abierta todo el día, crea una tarea con el Programador de tareas de Windows para que el script se ejecute al iniciar sesión. El script se mantiene vivo y corre la revisión diaria a las 16:00.
+---
 
 ## Control de duplicados
-- **Archivos copiados**: detecta y elimina copias por nombre (ej: `archivo (1).pdf`, `archivo - copia.pdf`) antes de procesar.
-- **Hash de archivo**: evita reprocesar PDFs ya analizados usando SHA256.
-- **Duplicados en Excel**: evita insertar filas duplicadas comparando Nro + Categoría + Fecha de Oficio.
+- **Archivos copiados**: detecta y elimina copias por nombre antes de procesar.
+- **Hash SHA256**: evita reprocesar archivos ya analizados.
+- **Duplicados en Excel**: compara Nro + Categoría + Fecha de Oficio.
 
 ## Archivos no accesibles
-Los archivos que existen en el directorio pero no se pueden leer (por ejemplo, archivos de OneDrive solo en la nube) se omiten con un warning en el log y no interrumpen el procesamiento.
+Archivos de OneDrive "solo en la nube" se omiten con warning en el log sin interrumpir el procesamiento.
 
 ## Limitaciones
-- Si el modelo no logra identificar correctamente la fecha del oficio, no podrá calcular un plazo relativo.
-- Si el modelo no logra identificar una gerencia responsable válida, la fila se agregará sin gerente responsable.
-- Los días hábiles actualmente excluyen solo sábado y domingo; los feriados no se descuentan.
+- Los días hábiles excluyen solo sábado y domingo; los feriados no se descuentan.
+- Si el modelo no identifica la fecha del oficio, no puede calcular plazos relativos.

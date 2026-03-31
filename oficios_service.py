@@ -8,15 +8,24 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 import tkinter as tk
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from tkinter import messagebox
-from typing import Any, Dict, List, Optional
+from tkinter import messagebox, ttk
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
+
+try:
+    from docx import Document as DocxDocument
+    from docx.shared import Pt, Inches, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
 
 import msal
 import requests
@@ -128,6 +137,75 @@ Reglas de extracción y normalización:
 11. No inventes datos.
 """
 
+INFORME_MULTA_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "sociedad":                 {"type": ["string", "null"]},
+        "regional":                 {"type": ["string", "null"]},
+        "zonal":                    {"type": ["string", "null"]},
+        "evento":                   {"type": ["string", "null"]},
+        "sector_activo":            {"type": ["string", "null"]},
+        "clientes_afectados":       {"type": ["string", "null"]},
+        "fecha_evento":             {"type": ["string", "null"]},
+        "fecha_notificacion_multa": {"type": ["string", "null"]},
+        "monto_utm":                {"type": ["string", "null"]},
+        "numero_resolucion":        {"type": ["string", "null"]},
+        "etapa_multa":              {"type": ["string", "null"]},
+        "descripcion_motivo_sec":   {"type": ["string", "null"]},
+        "descripcion_tecnica_zona": {"type": ["string", "null"]},
+        "causa_raiz":               {"type": ["string", "null"]},
+        "cronologia":               {"type": ["string", "null"]},
+        "que_paso":                 {"type": ["string", "null"]},
+        "que_se_hizo":              {"type": ["string", "null"]},
+        "plan_mejora":              {"type": ["string", "null"]},
+        "area_responsable_multa":   {"type": ["string", "null"]},
+        "area_responsable_mejora":  {"type": ["string", "null"]},
+    },
+    "required": [
+        "sociedad", "regional", "zonal", "evento", "sector_activo",
+        "clientes_afectados", "fecha_evento", "fecha_notificacion_multa",
+        "monto_utm", "numero_resolucion", "etapa_multa",
+        "descripcion_motivo_sec", "descripcion_tecnica_zona", "causa_raiz",
+        "cronologia", "que_paso", "que_se_hizo", "plan_mejora",
+        "area_responsable_multa", "area_responsable_mejora",
+    ],
+}
+
+INFORME_MULTA_PROMPT = """Eres un analista regulatorio de CGE. A partir del PDF adjunto (una multa o resolución sancionatoria de la SEC), extrae SOLO un JSON válido con los campos del informe de zona.
+
+Instrucciones:
+1. sociedad: nombre de la empresa sancionada (ej: "CGE Distribución S.A.").
+2. regional: región geográfica involucrada (ej: "Metropolitana", "Tarapacá").
+3. zonal: zona operativa específica si se menciona.
+4. evento: descripción breve del tipo de evento sancionado.
+5. sector_activo: sector eléctrico o activo físico involucrado.
+6. clientes_afectados: número o descripción de clientes afectados, o null.
+7. fecha_evento: fecha del evento sancionado (formato DD-MM-YYYY o texto si no es exacta).
+8. fecha_notificacion_multa: fecha en que CGE fue notificada de la multa.
+9. monto_utm: monto de la multa en UTM como texto (ej: "100 UTM").
+10. numero_resolucion: número de la resolución exenta SEC.
+11. etapa_multa: etapa actual (ej: "Notificación", "Descargos", "Resolución firme").
+12. descripcion_motivo_sec: descripción objetiva según la SEC del motivo de la multa. Sé detallado.
+13. descripcion_tecnica_zona: descripción técnica del evento desde la perspectiva operativa.
+14. causa_raiz: posible causa raíz interna identificable en el documento.
+15. cronologia: secuencia cronológica de los hechos relevantes.
+16. que_paso: resumen de qué ocurrió y cuál es la problemática sancionada.
+17. que_se_hizo: qué acciones se tomaron o dejaron de tomar.
+18. plan_mejora: si existe algún plan de mejora mencionado, descríbelo. Si no, null.
+19. area_responsable_multa: área interna de CGE responsable de la infracción.
+20. area_responsable_mejora: área responsable de implementar correcciones.
+
+Si un dato no está en el PDF, devuelve null. No inventes datos. Solo JSON, sin texto adicional.
+"""
+
+
+def get_base_dir() -> Path:
+    """Retorna el directorio base del ejecutable o del script."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
 
 @dataclass
 class Gerente:
@@ -158,6 +236,9 @@ class Config:
     model: str
     gerentes: Dict[str, Gerente]
     planner: PlannerConfig = field(default_factory=PlannerConfig)
+    informe_multa_api_key: str = ""
+    informe_multa_model: str = "gpt-4o-mini"
+    informe_output_dir: Path = field(default_factory=lambda: Path("."))
     request_timeout_seconds: int = 180
     scan_extensions: tuple[str, ...] = (".pdf",)
 
@@ -184,6 +265,10 @@ def load_config(path: Path) -> Config:
         bucket_id=planner_raw.get("bucket_id", ""),
     )
 
+    informe_raw = raw.get("informe_multa", {})
+    excel_parent = str(Path(raw["excel_path"]).parent)
+    informe_output_dir = Path(informe_raw.get("output_dir", excel_parent))
+
     return Config(
         watch_dir=Path(raw["watch_dir"]),
         excel_path=Path(raw["excel_path"]),
@@ -196,6 +281,9 @@ def load_config(path: Path) -> Config:
         model=raw.get("model", "gpt-5.4-mini"),
         gerentes=gerentes,
         planner=planner,
+        informe_multa_api_key=informe_raw.get("api_key", "") or api_key,
+        informe_multa_model=informe_raw.get("model", "gpt-4o-mini"),
+        informe_output_dir=informe_output_dir,
         request_timeout_seconds=int(raw.get("request_timeout_seconds", 180)),
     )
 
@@ -630,6 +718,221 @@ def show_summary_popup(stats: ProcessingStats) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Informe de Multa — OpenAI + Word
+# ---------------------------------------------------------------------------
+
+def is_multa(nro: str, concepto: str, corrections: List[Dict[str, Any]]) -> bool:
+    """Retorna True si el oficio es una multa según keywords o corrección manual."""
+    for c in reversed(corrections):
+        if str(c.get("nro", "")) == nro and c.get("campo") == "es_multa":
+            return bool(c.get("valor_nuevo", False))
+    return bool(_MULTA_KEYWORDS.search(concepto))
+
+
+def call_openai_informe_multa(config: Config, pdf_path: Path) -> Dict[str, Any]:
+    pdf_b64 = base64.b64encode(pdf_path.read_bytes()).decode("ascii")
+    payload = {
+        "model": config.informe_multa_model,
+        "max_output_tokens": 2000,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "informe_multa_extract",
+                "strict": True,
+                "schema": INFORME_MULTA_SCHEMA,
+            }
+        },
+        "input": [
+            {"role": "developer", "content": [{"type": "input_text", "text": INFORME_MULTA_PROMPT}]},
+            {"role": "user", "content": [
+                {"type": "input_text", "text": f"Analiza este PDF de multa SEC. Archivo: {pdf_path.name}"},
+                {"type": "input_file", "filename": pdf_path.name,
+                 "file_data": f"data:application/pdf;base64,{pdf_b64}"},
+            ]},
+        ],
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config.informe_multa_api_key}",
+    }
+    resp = requests.post("https://api.openai.com/v1/responses", headers=headers,
+                         json=payload, timeout=config.request_timeout_seconds)
+    if not resp.ok:
+        logging.error("OpenAI informe multa error %s: %s", resp.status_code, resp.text)
+        resp.raise_for_status()
+    output_text = extract_output_text(resp.json())
+    return json.loads(output_text)
+
+
+def _replace_in_paragraph(para: Any, replacements: Dict[str, str]) -> None:
+    """Reemplaza placeholders {{KEY}} en un párrafo de python-docx."""
+    full = "".join(r.text for r in para.runs)
+    if "{{" not in full:
+        return
+    for key, val in replacements.items():
+        full = full.replace(f"{{{{{key}}}}}", val or "")
+    for i, run in enumerate(para.runs):
+        run.text = full if i == 0 else ""
+
+
+def create_informe_template(output_path: Path) -> None:
+    """Crea el archivo Word template del informe de multa con placeholders."""
+    if not DOCX_AVAILABLE:
+        logging.warning("python-docx no instalado; no se puede crear el template.")
+        return
+    doc = DocxDocument()
+    # Encabezado
+    h = doc.add_heading("INFORME DE ZONA POR MULTA SEC", level=1)
+    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # Sección 1
+    doc.add_heading("1. Identificación General del Evento", level=2)
+    tbl = doc.add_table(rows=11, cols=2)
+    tbl.style = "Table Grid"
+    fields1 = [
+        ("Sociedad", "{{SOCIEDAD}}"), ("Regional", "{{REGIONAL}}"),
+        ("Zonal", "{{ZONAL}}"), ("Evento", "{{EVENTO}}"),
+        ("Sector / Activo involucrado", "{{SECTOR_ACTIVO}}"),
+        ("Clientes afectados (si aplica)", "{{CLIENTES_AFECTADOS}}"),
+        ("Fecha del Evento", "{{FECHA_EVENTO}}"),
+        ("Fecha de notificación de la multa SEC", "{{FECHA_NOTIFICACION}}"),
+        ("Monto de la multa (UTM)", "{{MONTO_UTM}}"),
+        ("N° Resolución Exenta SEC", "{{NUMERO_RESOLUCION}}"),
+        ("Etapa actual de la multa", "{{ETAPA_MULTA}}"),
+    ]
+    for i, (label, ph) in enumerate(fields1):
+        tbl.cell(i, 0).text = label
+        tbl.cell(i, 1).text = ph
+
+    # Sección 2
+    doc.add_heading("2. Causa de Infracción Normativa", level=2)
+    doc.add_paragraph("Descripción objetiva del motivo de la multa (según SEC):")
+    doc.add_paragraph("{{DESCRIPCION_MOTIVO_SEC}}")
+    doc.add_paragraph("Descripción Técnica del Evento (según Zona):")
+    doc.add_paragraph("{{DESCRIPCION_TECNICA_ZONA}}")
+    doc.add_paragraph("Declaración de la causa raíz interna (si se identifica):")
+    doc.add_paragraph("{{CAUSA_RAIZ}}")
+
+    # Sección 3
+    doc.add_heading("3. Cronología de la sanción", level=2)
+    doc.add_paragraph("{{CRONOLOGIA}}")
+
+    # Sección 4
+    doc.add_heading("4. Antecedentes Técnicos del Caso", level=2)
+    doc.add_paragraph("¿Qué pasó? ¿Cuál es la problemática que se sanciona?")
+    doc.add_paragraph("{{QUE_PASO}}")
+    doc.add_paragraph("¿Qué se hizo y qué se dejó de hacer para que la multa fuera cursada?")
+    doc.add_paragraph("{{QUE_SE_HIZO}}")
+    doc.add_paragraph("Plan de mejora (si existió) y avance al momento de la multa:")
+    doc.add_paragraph("{{PLAN_MEJORA}}")
+
+    # Sección 5
+    doc.add_heading("5. Área Responsable de la aplicación de la multa", level=2)
+    doc.add_paragraph("{{AREA_RESPONSABLE_MULTA}}")
+
+    # Sección 6
+    doc.add_heading("6. Área Responsable de implementar el plan de mejora", level=2)
+    doc.add_paragraph("{{AREA_RESPONSABLE_MEJORA}}")
+
+    # Sección 7
+    doc.add_heading("7. Firmas", level=2)
+    tbl2 = doc.add_table(rows=2, cols=2)
+    tbl2.cell(0, 0).text = "______________________________"
+    tbl2.cell(0, 1).text = "______________________________"
+    tbl2.cell(1, 0).text = "(nombre)\nDirector Regional"
+    tbl2.cell(1, 1).text = "(nombre)\nDirector (Of. Central)"
+
+    doc.add_paragraph(f"\nGenerado: {{{{FECHA_GENERACION}}}}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(output_path))
+    logging.info("Template de informe de multa creado en %s", output_path)
+
+
+def fill_informe_multa(config: Config, informe_data: Dict[str, Any],
+                       nro: str, output_path: Path) -> bool:
+    """Rellena el template Word con los datos extraídos y lo guarda."""
+    if not DOCX_AVAILABLE:
+        logging.error("python-docx no instalado; no se puede generar el informe.")
+        return False
+
+    template_path = get_base_dir() / "informe_multa_template.docx"
+    if not template_path.exists():
+        create_informe_template(template_path)
+
+    def v(key: str) -> str:
+        return str(informe_data.get(key) or "")
+
+    replacements = {
+        "SOCIEDAD": v("sociedad"),
+        "REGIONAL": v("regional"),
+        "ZONAL": v("zonal"),
+        "EVENTO": v("evento"),
+        "SECTOR_ACTIVO": v("sector_activo"),
+        "CLIENTES_AFECTADOS": v("clientes_afectados"),
+        "FECHA_EVENTO": v("fecha_evento"),
+        "FECHA_NOTIFICACION": v("fecha_notificacion_multa"),
+        "MONTO_UTM": v("monto_utm"),
+        "NUMERO_RESOLUCION": v("numero_resolucion"),
+        "ETAPA_MULTA": v("etapa_multa"),
+        "DESCRIPCION_MOTIVO_SEC": v("descripcion_motivo_sec"),
+        "DESCRIPCION_TECNICA_ZONA": v("descripcion_tecnica_zona"),
+        "CAUSA_RAIZ": v("causa_raiz"),
+        "CRONOLOGIA": v("cronologia"),
+        "QUE_PASO": v("que_paso"),
+        "QUE_SE_HIZO": v("que_se_hizo"),
+        "PLAN_MEJORA": v("plan_mejora"),
+        "AREA_RESPONSABLE_MULTA": v("area_responsable_multa"),
+        "AREA_RESPONSABLE_MEJORA": v("area_responsable_mejora"),
+        "FECHA_GENERACION": date.today().strftime("%d-%m-%Y"),
+    }
+
+    doc = DocxDocument(str(template_path))
+    for para in doc.paragraphs:
+        _replace_in_paragraph(para, replacements)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    _replace_in_paragraph(para, replacements)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(output_path))
+    logging.info("Informe de multa generado: %s", output_path)
+    return True
+
+
+def ask_and_generate_informe(config: Config, pdf_path: Path,
+                              extracted: Dict[str, Any]) -> None:
+    """Pregunta al usuario si desea generar el informe de multa y lo genera."""
+    nro = extracted.get("numero_oficio") or "S/N"
+    answer = messagebox.askyesno(
+        "Informe de Multa",
+        f"El oficio Nro {nro} parece ser una multa o formulación de cargos.\n\n"
+        "¿Desea generar automáticamente el Informe de Zona por Multa SEC?"
+    )
+    if not answer:
+        return
+    if not DOCX_AVAILABLE:
+        messagebox.showerror(
+            "Dependencia faltante",
+            "Instale python-docx para generar informes Word:\n  pip install python-docx"
+        )
+        return
+    output_path = config.informe_output_dir / f"Informe_Multa_Nro{nro}.docx"
+    try:
+        informe_data = call_openai_informe_multa(config, pdf_path)
+        ok = fill_informe_multa(config, informe_data, nro, output_path)
+        if ok:
+            messagebox.showinfo(
+                "Informe generado",
+                f"Informe de multa guardado en:\n{output_path}"
+            )
+    except Exception as exc:
+        logging.exception("Error generando informe de multa: %s", exc)
+        messagebox.showerror("Error", f"No se pudo generar el informe:\n{exc}")
+
+
+# ---------------------------------------------------------------------------
 # Microsoft Planner integration
 # ---------------------------------------------------------------------------
 
@@ -805,7 +1108,7 @@ def show_revaluar_gui(config: Config) -> None:
 
     tk.Label(frame_form, text="Nueva área responsable:").grid(row=0, column=0, sticky=tk.W, pady=2)
     area_var = tk.StringVar(root)
-    area_var.set("")
+    area_var.set("(sin cambio)")
     area_options = ["(sin cambio)"] + AREAS_VALIDAS
     area_menu = tk.OptionMenu(frame_form, area_var, *area_options)
     area_menu.config(width=25)
@@ -814,6 +1117,13 @@ def show_revaluar_gui(config: Config) -> None:
     tk.Label(frame_form, text="Nuevo plazo (DD-MM-YYYY):").grid(row=1, column=0, sticky=tk.W, pady=2)
     plazo_entry = tk.Entry(frame_form, width=20)
     plazo_entry.grid(row=1, column=1, sticky=tk.W, padx=5)
+
+    tk.Label(frame_form, text="¿Es multa / formulación de cargos?:").grid(row=2, column=0, sticky=tk.W, pady=2)
+    multa_var = tk.StringVar(value="(sin cambio)")
+    multa_frame = tk.Frame(frame_form)
+    multa_frame.grid(row=2, column=1, sticky=tk.W, padx=5)
+    for label, val in [("(sin cambio)", "(sin cambio)"), ("Sí, es multa", "si"), ("No es multa", "no")]:
+        tk.Radiobutton(multa_frame, text=label, variable=multa_var, value=val).pack(side=tk.LEFT)
 
     status_label = tk.Label(root, text="", fg="green", font=("Arial", 9))
     status_label.pack(pady=2)
@@ -829,6 +1139,7 @@ def show_revaluar_gui(config: Config) -> None:
         updates: Dict[str, Any] = {}
         new_area = area_var.get()
         new_plazo_raw = plazo_entry.get().strip()
+        new_multa = multa_var.get()
 
         if new_area and new_area != "(sin cambio)":
             corrections.append({
@@ -855,11 +1166,20 @@ def show_revaluar_gui(config: Config) -> None:
                 messagebox.showerror("Error", "Formato de fecha inválido. Use DD-MM-YYYY.")
                 return
 
-        if not updates:
+        if new_multa in ("si", "no"):
+            corrections.append({
+                "nro": rd["nro"],
+                "campo": "es_multa",
+                "valor_nuevo": (new_multa == "si"),
+                "concepto": rd["concepto"],
+            })
+
+        if not updates and new_multa == "(sin cambio)":
             messagebox.showinfo("Revaloración", "No se indicó ninguna corrección.")
             return
 
-        update_excel_row(excel_path, rd["nro"], rd["categoria"], updates, config.gerentes)
+        if updates:
+            update_excel_row(excel_path, rd["nro"], rd["categoria"], updates, config.gerentes)
         save_corrections(config.corrections_path, corrections)
 
         # Actualizar listbox
@@ -878,6 +1198,7 @@ def show_revaluar_gui(config: Config) -> None:
 
         area_var.set("(sin cambio)")
         plazo_entry.delete(0, tk.END)
+        multa_var.set("(sin cambio)")
 
     tk.Button(root, text="Guardar corrección", command=on_save, bg="#1F4E78", fg="white", font=("Arial", 10, "bold")).pack(pady=8)
 
@@ -939,7 +1260,11 @@ def show_upcoming_deadlines_popup(excel_path: Path) -> None:
     root.destroy()
 
 
-def process_directory(config: Config, state: dict[str, Any]) -> None:
+def process_directory(
+    config: Config, state: dict[str, Any]
+) -> Tuple[ProcessingStats, List[Tuple[Path, Dict[str, Any]]]]:
+    """Procesa los PDFs pendientes. Retorna (stats, lista_de_multas)."""
+    empty_stats = ProcessingStats()
     ensure_excel_exists(config.excel_path)
     remove_duplicate_files(config.watch_dir, config.scan_extensions)
     processed_hashes: set[str] = set(state.get("processed_hashes", []))
@@ -947,7 +1272,7 @@ def process_directory(config: Config, state: dict[str, Any]) -> None:
 
     if not pending:
         logging.info("No hay PDFs nuevos para procesar en %s", config.watch_dir)
-        return
+        return empty_stats, []
 
     logging.info("Se encontraron %s PDF(s) nuevos para procesar.", len(pending))
 
@@ -955,6 +1280,7 @@ def process_directory(config: Config, state: dict[str, Any]) -> None:
     corrections_prompt = build_corrections_prompt(corrections)
 
     stats = ProcessingStats()
+    multa_pdfs: List[Tuple[Path, Dict[str, Any]]] = []
     changed = False
     for pdf_path in pending:
         logging.info("Procesando %s", pdf_path.name)
@@ -976,6 +1302,10 @@ def process_directory(config: Config, state: dict[str, Any]) -> None:
             if due_date:
                 sync_to_planner(config, extracted, due_date)
             stats.registrar(extracted)
+            nro = extracted.get("numero_oficio") or ""
+            concepto = extracted.get("concepto") or ""
+            if is_multa(nro, concepto, corrections):
+                multa_pdfs.append((pdf_path, extracted))
             processed_hashes.add(file_hash)
             changed = True
             logging.info("PDF procesado correctamente: %s", pdf_path.name)
@@ -987,8 +1317,7 @@ def process_directory(config: Config, state: dict[str, Any]) -> None:
         state["processed_hashes"] = sorted(processed_hashes)
         save_state(config.processed_state_path, state)
 
-    if stats.total or stats.errores:
-        show_summary_popup(stats)
+    return stats, multa_pdfs
 
 
 def parse_run_time(run_time: str) -> tuple[int, int]:
@@ -1008,8 +1337,12 @@ def service_loop(config: Config) -> None:
 
         if (now.hour > hour or (now.hour == hour and now.minute >= minute)) and state.get("last_run_date") != today:
             logging.info("Ejecución diaria iniciada.")
-            process_directory(config, state)
+            stats, multa_pdfs = process_directory(config, state)
+            if stats.total or stats.errores:
+                show_summary_popup(stats)
             show_upcoming_deadlines_popup(config.excel_path)
+            for pdf_path, extracted in multa_pdfs:
+                ask_and_generate_informe(config, pdf_path, extracted)
             state["last_run_date"] = today
             save_state(config.processed_state_path, state)
             logging.info("Ejecución diaria finalizada.")
@@ -1019,8 +1352,12 @@ def service_loop(config: Config) -> None:
 
 def run_once(config: Config) -> None:
     state = load_state(config.processed_state_path)
-    process_directory(config, state)
+    stats, multa_pdfs = process_directory(config, state)
+    if stats.total or stats.errores:
+        show_summary_popup(stats)
     show_upcoming_deadlines_popup(config.excel_path)
+    for pdf_path, extracted in multa_pdfs:
+        ask_and_generate_informe(config, pdf_path, extracted)
 
 
 def reset_state(config: Config) -> None:
@@ -1029,10 +1366,118 @@ def reset_state(config: Config) -> None:
     logging.info("Estado reseteado. Se reprocesarán todos los PDFs en la próxima ejecución.")
 
 
+# ---------------------------------------------------------------------------
+# GUI principal
+# ---------------------------------------------------------------------------
+
+def launch_main_gui(config: Config) -> None:
+    root = tk.Tk()
+    root.title("Gestión de Oficios CGE")
+    root.geometry("440x320")
+    root.resizable(False, False)
+
+    # Encabezado
+    header = tk.Frame(root, bg="#1F4E78", height=65)
+    header.pack(fill=tk.X)
+    header.pack_propagate(False)
+    tk.Label(header, text="Gestión de Oficios CGE",
+             bg="#1F4E78", fg="white",
+             font=("Arial", 15, "bold")).pack(expand=True)
+
+    status_var = tk.StringVar(value="Sistema listo.")
+
+    def set_status(msg: str) -> None:
+        root.after(0, lambda: status_var.set(msg))
+
+    def on_run_complete(result: Any) -> None:
+        stats, multa_pdfs = result
+        btn_run.config(state=tk.NORMAL)
+        btn_reset.config(state=tk.NORMAL)
+        btn_revaluar.config(state=tk.NORMAL)
+        if stats.total or stats.errores:
+            show_summary_popup(stats)
+        show_upcoming_deadlines_popup(config.excel_path)
+        for pdf_path, extracted in multa_pdfs:
+            ask_and_generate_informe(config, pdf_path, extracted)
+        set_status(
+            f"Completado: {stats.total} PDF(s) procesado(s)."
+            if stats.total else "Sin PDFs nuevos."
+        )
+
+    def on_run_error(exc: Exception) -> None:
+        btn_run.config(state=tk.NORMAL)
+        btn_reset.config(state=tk.NORMAL)
+        btn_revaluar.config(state=tk.NORMAL)
+        messagebox.showerror("Error", str(exc))
+        set_status("Error durante el procesamiento.")
+
+    def run_once_action() -> None:
+        for btn in (btn_run, btn_reset, btn_revaluar):
+            btn.config(state=tk.DISABLED)
+        set_status("Procesando PDFs, por favor espere...")
+
+        def worker() -> None:
+            try:
+                state = load_state(config.processed_state_path)
+                result = process_directory(config, state)
+                root.after(0, lambda: on_run_complete(result))
+            except Exception as exc:
+                root.after(0, lambda: on_run_error(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def reset_action() -> None:
+        if messagebox.askyesno(
+            "Resetear valores",
+            "¿Resetear la memoria de PDFs procesados?\n"
+            "Todos los PDFs serán analizados de nuevo en la próxima ejecución."
+        ):
+            reset_state(config)
+            messagebox.showinfo("Listo", "Memoria reseteada correctamente.")
+            set_status("Memoria reseteada.")
+
+    def revaluar_action() -> None:
+        show_revaluar_gui(config)
+
+    btn_style: Dict[str, Any] = {
+        "width": 26, "height": 2,
+        "font": ("Arial", 11, "bold"),
+        "relief": tk.FLAT, "cursor": "hand2",
+        "bd": 0,
+    }
+    btn_frame = tk.Frame(root, pady=20)
+    btn_frame.pack(expand=True)
+
+    btn_run = tk.Button(btn_frame, text="▶   Ejecutar una vez",
+                        command=run_once_action,
+                        bg="#1F4E78", fg="white", **btn_style)
+    btn_run.pack(pady=6)
+
+    btn_reset = tk.Button(btn_frame, text="↺   Resetear valores",
+                          command=reset_action,
+                          bg="#C55A11", fg="white", **btn_style)
+    btn_reset.pack(pady=6)
+
+    btn_revaluar = tk.Button(btn_frame, text="✎   Revaluar oficio",
+                             command=revaluar_action,
+                             bg="#375623", fg="white", **btn_style)
+    btn_revaluar.pack(pady=6)
+
+    status_bar = tk.Label(root, textvariable=status_var,
+                          bd=1, relief=tk.SUNKEN, anchor=tk.W,
+                          font=("Arial", 9), fg="#555")
+    status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+    root.mainloop()
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Procesa PDFs de oficios y llena un Excel usando OpenAI API.")
+    parser = argparse.ArgumentParser(
+        description="Gestión de Oficios CGE — abre la interfaz gráfica si no se pasan argumentos."
+    )
     parser.add_argument("--config", default="config.json", help="Ruta al archivo de configuración JSON.")
-    parser.add_argument("--run-once", action="store_true", help="Ejecuta una sola vez y termina.")
+    parser.add_argument("--run-once", action="store_true", help="Ejecuta una sola vez y termina (sin GUI).")
+    parser.add_argument("--service", action="store_true", help="Modo servicio continuo (sin GUI).")
     parser.add_argument(
         "--create-template",
         action="store_true",
@@ -1068,8 +1513,11 @@ def main() -> None:
 
     if args.run_once:
         run_once(config)
-    else:
+    elif args.service:
         service_loop(config)
+    else:
+        # Comportamiento por defecto: abrir la interfaz gráfica
+        launch_main_gui(config)
 
 
 if __name__ == "__main__":

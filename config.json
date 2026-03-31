@@ -8,6 +8,11 @@
   "openai_api_key": "REEMPLAZAR_API_KEY",
   "model": "gpt-5.4-nano",
   "request_timeout_seconds": 180,
+  "informe_multa": {
+    "api_key": "",
+    "model": "gpt-4o-mini",
+    "output_dir": "C:/Users/analistamjml/OneDrive - Grupo CGE/Planificación y Calidad - Documentos/Gobierno y Control Financiero Comercial/Oficios/Informes"
+  },
   "planner": {
     "enabled": true,
     "tenant_id": "REEMPLAZAR_TENANT_ID",
