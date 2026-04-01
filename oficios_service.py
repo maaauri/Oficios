@@ -1209,6 +1209,53 @@ def build_corrections_prompt(corrections: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def build_history_prompt(excel_path: Path, max_per_area: int = 5) -> str:
+    """Lee el Excel y construye un bloque de ejemplos históricos por área.
+
+    Selecciona hasta *max_per_area* oficios recientes de cada área para que
+    el modelo aprenda los patrones de clasificación reales.
+    """
+    if not excel_path.exists():
+        return ""
+
+    try:
+        wb = load_workbook(excel_path, read_only=True)
+        ws = wb.active
+    except Exception:
+        return ""
+
+    # area -> lista de (nro, concepto_corto)
+    by_area: Dict[str, List[Tuple[str, str]]] = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        nro = str(row[0] or "").strip()
+        concepto = str(row[3] or "").strip()
+        area = str(row[5] or "").strip()
+        if not nro or not area or not concepto:
+            continue
+        by_area.setdefault(area, []).append((nro, concepto[:120]))
+    wb.close()
+
+    if not by_area:
+        return ""
+
+    lines = [
+        "\n\nEjemplos históricos de oficios clasificados correctamente por área "
+        "(usa estos ejemplos para aprender los patrones de clasificación):"
+    ]
+    for area in sorted(by_area):
+        examples = by_area[area][-max_per_area:]  # los más recientes
+        lines.append(f"\n  Área «{area}»:")
+        for nro, concepto in examples:
+            lines.append(f"    - Nro {nro}: {concepto}")
+
+    lines.append(
+        "\nClasifica el nuevo oficio en el área que mejor se ajuste "
+        "a los patrones observados arriba. Las correcciones del usuario "
+        "(si las hay) tienen prioridad sobre los ejemplos históricos."
+    )
+    return "\n".join(lines)
+
+
 def save_corrections(path: Path, corrections: List[Dict[str, Any]]) -> None:
     ensure_parent(path)
     with path.open("w", encoding="utf-8") as f:
@@ -1467,6 +1514,8 @@ def process_directory(
 
     corrections = load_corrections(config.corrections_path)
     corrections_prompt = build_corrections_prompt(corrections)
+    history_prompt = build_history_prompt(config.excel_path)
+    learning_prompt = history_prompt + corrections_prompt
 
     stats = ProcessingStats()
     multa_pdfs: List[Tuple[Path, Dict[str, Any]]] = []
@@ -1475,7 +1524,7 @@ def process_directory(
         logging.info("Procesando %s", pdf_path.name)
         file_hash = sha256_file(pdf_path)
         try:
-            extracted = call_openai_extract(config, pdf_path, corrections_prompt)
+            extracted = call_openai_extract(config, pdf_path, learning_prompt)
             due_date = compute_due_date(extracted)
             if due_date and not extracted.get("plazo_respuesta") and extracted.get("plazo_relativo_cantidad"):
                 logging.info(
