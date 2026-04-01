@@ -71,6 +71,7 @@ SCHEMA = {
             "type": ["string", "null"],
             "enum": ["dias_corridos", "dias_habiles", None],
         },
+        "oficio_relacionado": {"type": ["string", "null"]},
     },
     "required": [
         "numero_oficio",
@@ -81,6 +82,7 @@ SCHEMA = {
         "plazo_respuesta",
         "plazo_relativo_cantidad",
         "plazo_relativo_tipo",
+        "oficio_relacionado",
     ],
 }
 
@@ -138,9 +140,14 @@ Reglas de extracción y normalización:
      - \"30 días\" sin aclaración expresa => trátalo como \"dias_corridos\"
    - si existe una fecha exacta y además un plazo relativo, devuelve ambos si ambos aparecen explícitamente
    - si no existe plazo relativo, devuelve null en ambos campos
-9. Si un dato no está claro o no existe, devuelve null.
-10. No agregues ningún texto fuera del JSON.
-11. No inventes datos.
+9. oficio_relacionado:
+   - si el documento hace referencia explícita a otro oficio, resolución u orden de compra anterior
+     (expresiones como "en respuesta a", "en relación al Oficio N°", "complementa el Ord.", "adjunto al OC"),
+     devuelve el número de ese documento (solo cifras o código, sin prefijos)
+   - si no hay referencia a otro documento, devuelve null
+10. Si un dato no está claro o no existe, devuelve null.
+11. No agregues ningún texto fuera del JSON.
+12. No inventes datos.
 """
 
 INFORME_MULTA_SCHEMA = {
@@ -258,7 +265,15 @@ class Config:
 
 def load_config(path: Path) -> Config:
     with path.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
+        try:
+            raw = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"El archivo de configuración tiene un error de formato JSON:\n"
+                f"  Archivo: {path}\n"
+                f"  Detalle: {exc}\n\n"
+                f"Revise que no haya comas sobrantes, comillas sin cerrar o caracteres inválidos."
+            ) from exc
 
     gerentes: Dict[str, Gerente] = {}
     for area, item in raw.get("gerentes", {}).items():
@@ -471,9 +486,38 @@ def extract_output_text(api_response: dict[str, Any]) -> str:
     raise ValueError("No se pudo extraer output_text de la respuesta de OpenAI.")
 
 
-def call_openai_extract(config: Config, pdf_path: Path, corrections_prompt: str = "") -> dict[str, Any]:
+def call_openai_extract(
+    config: Config,
+    pdf_path: Path,
+    corrections_prompt: str = "",
+    related_pdf_path: Optional[Path] = None,
+) -> dict[str, Any]:
     pdf_b64 = base64.b64encode(pdf_path.read_bytes()).decode("ascii")
     full_prompt = PROMPT + corrections_prompt
+
+    if related_pdf_path is not None:
+        intro_text = (
+            f"Se adjuntan DOS documentos vinculados entre sí. "
+            f"Documento principal: {pdf_path.name}. "
+            f"Documento relacionado: {related_pdf_path.name}. "
+            f"Estudia ambos para determinar el área responsable y los demás metadatos. "
+            f"El JSON debe corresponder al documento principal."
+        )
+        related_b64 = base64.b64encode(related_pdf_path.read_bytes()).decode("ascii")
+        user_content = [
+            {"type": "input_text", "text": intro_text},
+            {"type": "input_file", "filename": pdf_path.name,
+             "file_data": f"data:application/pdf;base64,{pdf_b64}"},
+            {"type": "input_file", "filename": related_pdf_path.name,
+             "file_data": f"data:application/pdf;base64,{related_b64}"},
+        ]
+    else:
+        user_content = [
+            {"type": "input_text",
+             "text": f"Analiza el siguiente PDF. Nombre del archivo: {pdf_path.name}"},
+            {"type": "input_file", "filename": pdf_path.name,
+             "file_data": f"data:application/pdf;base64,{pdf_b64}"},
+        ]
 
     payload = {
         "model": config.model,
@@ -489,23 +533,11 @@ def call_openai_extract(config: Config, pdf_path: Path, corrections_prompt: str 
         "input": [
             {
                 "role": "developer",
-                "content": [
-                    {"type": "input_text", "text": full_prompt}
-                ],
+                "content": [{"type": "input_text", "text": full_prompt}],
             },
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": f"Analiza el siguiente PDF. Nombre del archivo: {pdf_path.name}",
-                    },
-                    {
-                        "type": "input_file",
-                        "filename": pdf_path.name,
-                        "file_data": f"data:application/pdf;base64,{pdf_b64}",
-                    },
-                ],
+                "content": user_content,
             },
         ],
     }
@@ -653,6 +685,21 @@ def remove_duplicate_files(watch_dir: Path, extensions: tuple[str, ...]) -> int:
 
 
 _VALID_PREFIXES = re.compile(r"^(OC|Ord\.|RE)\s", re.IGNORECASE)
+
+
+def find_related_pdf(watch_dir: Path, related_nro: str) -> Optional[Path]:
+    """Busca en watch_dir un PDF cuyo nombre contenga el número de oficio relacionado."""
+    if not related_nro or not watch_dir.exists():
+        return None
+    # Normalizar: quitar espacios y guiones para comparación flexible
+    nro_clean = re.sub(r"[\s\-/]", "", related_nro).lower()
+    for path in watch_dir.iterdir():
+        if not path.name.lower().endswith(".pdf"):
+            continue
+        name_clean = re.sub(r"[\s\-/]", "", path.stem).lower()
+        if nro_clean in name_clean:
+            return path
+    return None
 
 
 def find_pending_pdfs(config: Config, processed_hashes: set[str]) -> List[Path]:
@@ -1201,6 +1248,57 @@ def build_corrections_prompt(corrections: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def build_history_prompt(excel_path: Path, max_per_area: int = 5) -> str:
+    """Lee el Excel y construye un bloque de ejemplos históricos por área.
+
+    Selecciona hasta *max_per_area* oficios recientes de cada área para que
+    el modelo aprenda los patrones de clasificación reales.
+    """
+    if not excel_path.exists():
+        return ""
+
+    try:
+        wb = load_workbook(excel_path, read_only=True)
+        ws = wb.active
+    except Exception:
+        return ""
+
+    _skip = re.compile(r"solicita\s+m[aá]s\s+informaci[oó]n", re.IGNORECASE)
+
+    # area -> lista de (nro, concepto_corto)
+    by_area: Dict[str, List[Tuple[str, str]]] = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        nro = str(row[0] or "").strip()
+        concepto = str(row[3] or "").strip()
+        area = str(row[5] or "").strip()
+        if not nro or not area or not concepto:
+            continue
+        if _skip.search(concepto):
+            continue  # excluir oficios de solicitud de más información
+        by_area.setdefault(area, []).append((nro, concepto[:120]))
+    wb.close()
+
+    if not by_area:
+        return ""
+
+    lines = [
+        "\n\nEjemplos históricos de oficios clasificados correctamente por área "
+        "(usa estos ejemplos para aprender los patrones de clasificación):"
+    ]
+    for area in sorted(by_area):
+        examples = by_area[area][-max_per_area:]  # los más recientes
+        lines.append(f"\n  Área «{area}»:")
+        for nro, concepto in examples:
+            lines.append(f"    - Nro {nro}: {concepto}")
+
+    lines.append(
+        "\nClasifica el nuevo oficio en el área que mejor se ajuste "
+        "a los patrones observados arriba. Las correcciones del usuario "
+        "(si las hay) tienen prioridad sobre los ejemplos históricos."
+    )
+    return "\n".join(lines)
+
+
 def save_corrections(path: Path, corrections: List[Dict[str, Any]]) -> None:
     ensure_parent(path)
     with path.open("w", encoding="utf-8") as f:
@@ -1459,6 +1557,8 @@ def process_directory(
 
     corrections = load_corrections(config.corrections_path)
     corrections_prompt = build_corrections_prompt(corrections)
+    history_prompt = build_history_prompt(config.excel_path)
+    learning_prompt = history_prompt + corrections_prompt
 
     stats = ProcessingStats()
     multa_pdfs: List[Tuple[Path, Dict[str, Any]]] = []
@@ -1467,7 +1567,26 @@ def process_directory(
         logging.info("Procesando %s", pdf_path.name)
         file_hash = sha256_file(pdf_path)
         try:
-            extracted = call_openai_extract(config, pdf_path, corrections_prompt)
+            extracted = call_openai_extract(config, pdf_path, learning_prompt)
+
+            # Si detectó un oficio relacionado, buscar su PDF y re-extraer con ambos
+            related_nro = extracted.get("oficio_relacionado")
+            if related_nro:
+                related_path = find_related_pdf(config.watch_dir, related_nro)
+                if related_path and related_path != pdf_path:
+                    logging.info(
+                        "Oficio relacionado encontrado: %s → re-extrayendo con ambos PDFs.",
+                        related_path.name,
+                    )
+                    extracted = call_openai_extract(
+                        config, pdf_path, learning_prompt, related_pdf_path=related_path
+                    )
+                elif related_nro:
+                    logging.info(
+                        "Oficio relacionado Nro %s mencionado pero no encontrado en directorio.",
+                        related_nro,
+                    )
+
             due_date = compute_due_date(extracted)
             if due_date and not extracted.get("plazo_respuesta") and extracted.get("plazo_relativo_cantidad"):
                 logging.info(
