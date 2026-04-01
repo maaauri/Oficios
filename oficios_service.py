@@ -1667,8 +1667,166 @@ def reset_state(config: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Generar informe de multa manual
+# ---------------------------------------------------------------------------
+
+def show_generar_informe_gui(config: Config) -> None:
+    """Permite seleccionar una multa del Excel y generar su informe Word."""
+    excel_path = config.excel_path
+    if not excel_path.exists():
+        messagebox.showinfo("Informe de multa", "No existe el archivo Excel.")
+        return
+
+    wb = load_workbook(excel_path, read_only=True)
+    ws = wb.active
+    multas_data: List[Dict[str, str]] = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        nro = str(row[0] or "").strip()
+        if not nro:
+            continue
+        multa_flag = str(row[9] or "").strip().lower()
+        if multa_flag not in ("sí", "si"):
+            continue
+        multas_data.append({
+            "nro": nro,
+            "categoria": str(row[1] or ""),
+            "concepto": str(row[3] or ""),
+            "gerencia": str(row[5] or ""),
+        })
+    wb.close()
+
+    if not multas_data:
+        messagebox.showinfo("Informe de multa", "No hay oficios marcados como multa en el Excel.")
+        return
+
+    win = tk.Toplevel()
+    win.title("Generar Informe de Multa")
+    win.geometry("750x400")
+    win.resizable(True, True)
+
+    header = tk.Frame(win, bg="#922B21", height=40)
+    header.pack(fill=tk.X)
+    header.pack_propagate(False)
+    tk.Label(header, text="Seleccione una multa para generar el informe",
+             bg="#922B21", fg="white", font=("Arial", 11, "bold")).pack(expand=True)
+
+    frame_list = tk.Frame(win)
+    frame_list.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+    listbox = tk.Listbox(frame_list, font=("Consolas", 9), selectmode=tk.SINGLE)
+    scrollbar = tk.Scrollbar(frame_list, orient=tk.VERTICAL, command=listbox.yview)
+    listbox.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    listbox.pack(fill=tk.BOTH, expand=True)
+
+    for md in multas_data:
+        listbox.insert(
+            tk.END,
+            f"Nro {md['nro']}  |  {md['categoria']}  |  {md['gerencia']}  |  {md['concepto'][:70]}"
+        )
+
+    status_label = tk.Label(win, text="", fg="#922B21", font=("Arial", 9))
+    status_label.pack(pady=2)
+
+    def on_generate() -> None:
+        sel = listbox.curselection()
+        if not sel:
+            messagebox.showwarning("Informe de multa", "Seleccione una multa primero.")
+            return
+        md = multas_data[sel[0]]
+        nro = md["nro"]
+
+        # Buscar el PDF en watch_dir
+        pdf_path = find_related_pdf(config.watch_dir, nro)
+        if not pdf_path:
+            messagebox.showerror(
+                "PDF no encontrado",
+                f"No se encontró el PDF del oficio Nro {nro} en:\n{config.watch_dir}\n\n"
+                "Asegúrese de que el archivo PDF esté en la carpeta de oficios."
+            )
+            return
+
+        if not DOCX_AVAILABLE:
+            messagebox.showerror(
+                "Dependencia faltante",
+                "Instale python-docx para generar informes Word:\n  pip install python-docx"
+            )
+            return
+
+        output_path = config.informe_output_dir / f"Informe_Multa_Nro{nro}.docx"
+        status_label.config(text=f"Generando informe para Nro {nro}, espere...")
+        win.update_idletasks()
+
+        def worker() -> None:
+            try:
+                informe_data = call_anthropic_informe_multa(config, pdf_path)
+                ok = fill_informe_multa(config, informe_data, nro, output_path)
+                if ok:
+                    win.after(0, lambda: status_label.config(
+                        text=f"Informe generado: {output_path.name}"))
+                    win.after(0, lambda: messagebox.showinfo(
+                        "Informe generado",
+                        f"Informe de multa guardado en:\n{output_path}"
+                    ))
+                else:
+                    win.after(0, lambda: status_label.config(text="Error al generar el informe."))
+            except Exception as exc:
+                logging.exception("Error generando informe de multa: %s", exc)
+                win.after(0, lambda: status_label.config(text="Error al generar el informe."))
+                win.after(0, lambda: messagebox.showerror(
+                    "Error", f"No se pudo generar el informe:\n{exc}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    btn_frame = tk.Frame(win)
+    btn_frame.pack(pady=8)
+    tk.Button(btn_frame, text="Generar informe", command=on_generate,
+              bg="#922B21", fg="white", font=("Arial", 10, "bold"),
+              width=20, cursor="hand2").pack(side=tk.LEFT, padx=5)
+    tk.Button(btn_frame, text="Cerrar", command=win.destroy,
+              bg="#1F4E78", fg="white", font=("Arial", 10, "bold"),
+              width=12, cursor="hand2").pack(side=tk.LEFT, padx=5)
+
+
+# ---------------------------------------------------------------------------
 # Estadísticas
 # ---------------------------------------------------------------------------
+
+_PIE_COLORS = [
+    "#1F4E78", "#C55A11", "#375623", "#5B2C6F",
+    "#922B21", "#1A5276", "#D4AC0D", "#117A65",
+]
+
+
+def _draw_pie_chart(canvas: tk.Canvas, data: Dict[str, int], cx: int, cy: int, r: int) -> None:
+    """Dibuja un gráfico de torta en el canvas dado."""
+    total = sum(data.values())
+    if total == 0:
+        return
+
+    start = 0.0
+    items = sorted(data.items(), key=lambda x: -x[1])
+    legend_y = cy - r
+
+    for i, (label, count) in enumerate(items):
+        extent = count / total * 360
+        color = _PIE_COLORS[i % len(_PIE_COLORS)]
+        canvas.create_arc(
+            cx - r, cy - r, cx + r, cy + r,
+            start=start, extent=extent,
+            fill=color, outline="white", width=2,
+        )
+        start += extent
+
+        # Leyenda a la derecha
+        lx = cx + r + 20
+        ly = legend_y + i * 22
+        canvas.create_rectangle(lx, ly, lx + 14, ly + 14, fill=color, outline=color)
+        pct = count * 100 / total
+        canvas.create_text(lx + 20, ly + 7, anchor=tk.W,
+                           text=f"{label}: {count} ({pct:.0f}%)",
+                           font=("Arial", 9))
+
 
 def show_estadisticas_gui(config: Config) -> None:
     """Muestra una ventana con estadísticas agregadas del Excel."""
@@ -1724,7 +1882,7 @@ def show_estadisticas_gui(config: Config) -> None:
 
     win = tk.Toplevel()
     win.title("Estadísticas de Oficios")
-    win.geometry("500x420")
+    win.geometry("700x600")
     win.resizable(True, True)
 
     header = tk.Frame(win, bg="#1F4E78", height=40)
@@ -1733,10 +1891,23 @@ def show_estadisticas_gui(config: Config) -> None:
     tk.Label(header, text="Estadísticas de Oficios Analizados",
              bg="#1F4E78", fg="white", font=("Arial", 12, "bold")).pack(expand=True)
 
-    text = tk.Text(win, font=("Consolas", 10), wrap=tk.WORD, padx=10, pady=10)
-    text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    text = tk.Text(win, font=("Consolas", 10), wrap=tk.WORD, padx=10, pady=10,
+                   height=10)
+    text.pack(fill=tk.X, padx=5, pady=5)
     text.insert(tk.END, "\n".join(lines))
     text.config(state=tk.DISABLED)
+
+    # Gráfico de torta de áreas
+    tk.Label(win, text="Distribución por área responsable",
+             font=("Arial", 11, "bold")).pack(pady=(5, 0))
+
+    n_areas = len(areas)
+    chart_w = max(500, 280 + n_areas * 22)
+    chart_h = max(260, 40 + n_areas * 22)
+    canvas = tk.Canvas(win, width=chart_w, height=chart_h, bg="white",
+                       highlightthickness=0)
+    canvas.pack(padx=10, pady=5)
+    _draw_pie_chart(canvas, dict(areas), cx=130, cy=chart_h // 2, r=100)
 
     tk.Button(win, text="Cerrar", command=win.destroy,
               bg="#1F4E78", fg="white", font=("Arial", 10, "bold"),
@@ -1750,7 +1921,7 @@ def show_estadisticas_gui(config: Config) -> None:
 def launch_main_gui(config: Config) -> None:
     root = tk.Tk()
     root.title("Gestión de Oficios CGE")
-    root.geometry("440x380")
+    root.geometry("440x440")
     root.resizable(False, False)
 
     # Encabezado
@@ -1839,6 +2010,14 @@ def launch_main_gui(config: Config) -> None:
                              command=revaluar_action,
                              bg="#375623", fg="white", **btn_style)
     btn_revaluar.pack(pady=6)
+
+    def informe_multa_action() -> None:
+        show_generar_informe_gui(config)
+
+    btn_informe = tk.Button(btn_frame, text="📝   Informe de multa",
+                            command=informe_multa_action,
+                            bg="#922B21", fg="white", **btn_style)
+    btn_informe.pack(pady=6)
 
     def estadisticas_action() -> None:
         show_estadisticas_gui(config)
