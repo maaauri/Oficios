@@ -1331,6 +1331,99 @@ def update_excel_row(excel_path: Path, nro: str, categoria: str,
     wb.close()
 
 
+# ---------------------------------------------------------------------------
+# Design system (paleta y helpers de UI)
+# ---------------------------------------------------------------------------
+
+UI = {
+    # Colores principales
+    "primary":       "#1F4E78",
+    "primary_dark":  "#163A5A",
+    "primary_light": "#2E6BA1",
+    "accent":        "#C55A11",
+    "success":       "#2E7D4F",
+    "warning":       "#B7791F",
+    "danger":        "#922B21",
+    "info":          "#5B2C6F",
+    # Fondos
+    "bg":            "#F4F6FA",
+    "surface":       "#FFFFFF",
+    "surface_alt":   "#EEF2F7",
+    # Texto y bordes
+    "text":          "#2C3E50",
+    "text_muted":    "#6B7A8A",
+    "border":        "#D6DEE7",
+    # Tipografía
+    "font_base":     ("Segoe UI", 10),
+    "font_bold":     ("Segoe UI", 10, "bold"),
+    "font_title":    ("Segoe UI", 16, "bold"),
+    "font_heading":  ("Segoe UI", 12, "bold"),
+    "font_small":    ("Segoe UI", 9),
+    "font_mono":     ("Consolas", 9),
+}
+
+
+def _hover(widget: tk.Widget, base_bg: str, hover_bg: str) -> None:
+    """Agrega efecto hover a un widget (botón)."""
+    widget.bind("<Enter>", lambda _e: widget.config(bg=hover_bg))
+    widget.bind("<Leave>", lambda _e: widget.config(bg=base_bg))
+
+
+def ui_header(parent: tk.Widget, title: str, subtitle: Optional[str] = None,
+              bg: Optional[str] = None, height: int = 70) -> tk.Frame:
+    """Cabecera coloreada con título y subtítulo opcional."""
+    bg_color = bg or UI["primary"]
+    frame = tk.Frame(parent, bg=bg_color, height=height)
+    frame.pack(fill=tk.X)
+    frame.pack_propagate(False)
+    inner = tk.Frame(frame, bg=bg_color)
+    inner.pack(expand=True)
+    tk.Label(inner, text=title, bg=bg_color, fg="white",
+             font=UI["font_title"]).pack()
+    if subtitle:
+        tk.Label(inner, text=subtitle, bg=bg_color, fg="#CFE0EF",
+                 font=UI["font_small"]).pack()
+    return frame
+
+
+def ui_button(parent: tk.Widget, text: str, command: Any,
+              variant: str = "primary", width: int = 26, height: int = 2,
+              icon: str = "") -> tk.Button:
+    """Crea un botón con el estilo y variantes del design system."""
+    palette = {
+        "primary": (UI["primary"], UI["primary_dark"]),
+        "accent":  (UI["accent"],  "#9E4710"),
+        "success": (UI["success"], "#215C39"),
+        "warning": (UI["warning"], "#8B5A17"),
+        "danger":  (UI["danger"],  "#6E1F18"),
+        "info":    (UI["info"],    "#431F50"),
+        "ghost":   (UI["surface_alt"], UI["border"]),
+    }
+    base_bg, hover_bg = palette.get(variant, palette["primary"])
+    fg = UI["text"] if variant == "ghost" else "white"
+    label = f"{icon}   {text}" if icon else text
+    btn = tk.Button(
+        parent, text=label, command=command,
+        bg=base_bg, fg=fg,
+        activebackground=hover_bg, activeforeground=fg,
+        font=UI["font_bold"],
+        relief=tk.FLAT, bd=0, cursor="hand2",
+        width=width, height=height,
+        padx=10, pady=4,
+    )
+    _hover(btn, base_bg, hover_bg)
+    return btn
+
+
+def ui_card(parent: tk.Widget, **pack_kw) -> tk.Frame:
+    """Contenedor tipo tarjeta con fondo blanco y borde sutil."""
+    outer = tk.Frame(parent, bg=UI["border"])
+    outer.pack(**pack_kw)
+    inner = tk.Frame(outer, bg=UI["surface"])
+    inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+    return inner
+
+
 def show_revaluar_gui(config: Config) -> None:
     excel_path = config.excel_path
     if not excel_path.exists():
@@ -1363,49 +1456,95 @@ def show_revaluar_gui(config: Config) -> None:
 
     root = tk.Tk()
     root.title("Revaloración de oficios")
-    root.geometry("800x500")
+    root.geometry("880x600")
+    root.configure(bg=UI["bg"])
     root.resizable(True, True)
 
-    # --- Lista de oficios ---
-    frame_list = tk.Frame(root)
-    frame_list.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+    ui_header(root, "Revaloración de Oficios",
+              subtitle="Seleccione un oficio y corrija sus datos",
+              bg=UI["success"])
 
-    tk.Label(frame_list, text="Seleccione un oficio para corregir:", font=("Arial", 10, "bold")).pack(anchor=tk.W)
+    # --- Lista de oficios (tarjeta) ---
+    list_card = ui_card(root, fill=tk.BOTH, expand=True, padx=16, pady=(14, 8))
+    tk.Label(list_card, text="Oficios registrados",
+             font=UI["font_heading"], bg=UI["surface"], fg=UI["text"]) \
+        .pack(anchor=tk.W, padx=14, pady=(12, 6))
 
-    listbox = tk.Listbox(frame_list, font=("Consolas", 9), selectmode=tk.SINGLE)
-    scrollbar = tk.Scrollbar(frame_list, orient=tk.VERTICAL, command=listbox.yview)
+    list_wrap = tk.Frame(list_card, bg=UI["surface"])
+    list_wrap.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 14))
+    listbox = tk.Listbox(
+        list_wrap, font=UI["font_mono"], selectmode=tk.SINGLE,
+        bg=UI["surface"], fg=UI["text"],
+        selectbackground=UI["primary_light"], selectforeground="white",
+        relief=tk.FLAT, highlightthickness=1,
+        highlightbackground=UI["border"], highlightcolor=UI["primary_light"],
+        activestyle="none",
+    )
+    scrollbar = tk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=listbox.yview)
     listbox.configure(yscrollcommand=scrollbar.set)
     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
     listbox.pack(fill=tk.BOTH, expand=True)
 
     for rd in rows_data:
-        listbox.insert(tk.END, f"Nro {rd['nro']}  |  {rd['categoria']}  |  {rd['gerencia']}  |  {rd['plazo_str']}  |  {rd['concepto'][:60]}")
+        listbox.insert(
+            tk.END,
+            f"  Nro {rd['nro']:<8}  │  {rd['categoria']:<18}  │  "
+            f"{rd['gerencia']:<18}  │  {rd['plazo_str']:<10}  │  {rd['concepto'][:60]}"
+        )
 
-    # --- Formulario de corrección ---
-    frame_form = tk.Frame(root)
-    frame_form.pack(fill=tk.X, padx=10, pady=5)
+    # --- Formulario de corrección (tarjeta) ---
+    form_card = ui_card(root, fill=tk.X, padx=16, pady=(0, 8))
+    tk.Label(form_card, text="Corregir oficio seleccionado",
+             font=UI["font_heading"], bg=UI["surface"], fg=UI["text"]) \
+        .pack(anchor=tk.W, padx=14, pady=(12, 8))
 
-    tk.Label(frame_form, text="Nueva área responsable:").grid(row=0, column=0, sticky=tk.W, pady=2)
-    area_var = tk.StringVar(root)
-    area_var.set("(sin cambio)")
+    frame_form = tk.Frame(form_card, bg=UI["surface"])
+    frame_form.pack(fill=tk.X, padx=14, pady=(0, 14))
+
+    lbl_cfg = {"bg": UI["surface"], "fg": UI["text_muted"], "font": UI["font_base"]}
+
+    tk.Label(frame_form, text="Nueva área responsable", **lbl_cfg) \
+        .grid(row=0, column=0, sticky=tk.W, pady=6, padx=(0, 12))
+    area_var = tk.StringVar(root, value="(sin cambio)")
     area_options = ["(sin cambio)"] + AREAS_VALIDAS
     area_menu = tk.OptionMenu(frame_form, area_var, *area_options)
-    area_menu.config(width=25)
-    area_menu.grid(row=0, column=1, sticky=tk.W, padx=5)
+    area_menu.config(
+        width=24, bg=UI["surface_alt"], fg=UI["text"],
+        font=UI["font_base"], relief=tk.FLAT, bd=0,
+        activebackground=UI["border"], highlightthickness=1,
+        highlightbackground=UI["border"], cursor="hand2",
+    )
+    area_menu["menu"].config(bg=UI["surface"], fg=UI["text"], font=UI["font_base"])
+    area_menu.grid(row=0, column=1, sticky=tk.W, pady=6)
 
-    tk.Label(frame_form, text="Nuevo plazo (DD-MM-YYYY):").grid(row=1, column=0, sticky=tk.W, pady=2)
-    plazo_entry = tk.Entry(frame_form, width=20)
-    plazo_entry.grid(row=1, column=1, sticky=tk.W, padx=5)
+    tk.Label(frame_form, text="Nuevo plazo (DD-MM-YYYY)", **lbl_cfg) \
+        .grid(row=1, column=0, sticky=tk.W, pady=6, padx=(0, 12))
+    plazo_entry = tk.Entry(
+        frame_form, width=22, font=UI["font_base"],
+        bg=UI["surface"], fg=UI["text"],
+        relief=tk.FLAT, highlightthickness=1,
+        highlightbackground=UI["border"], highlightcolor=UI["primary_light"],
+    )
+    plazo_entry.grid(row=1, column=1, sticky=tk.W, pady=6, ipady=4)
 
-    tk.Label(frame_form, text="¿Es multa / formulación de cargos?:").grid(row=2, column=0, sticky=tk.W, pady=2)
+    tk.Label(frame_form, text="¿Es multa / formulación de cargos?", **lbl_cfg) \
+        .grid(row=2, column=0, sticky=tk.W, pady=6, padx=(0, 12))
     multa_var = tk.StringVar(value="(sin cambio)")
-    multa_frame = tk.Frame(frame_form)
-    multa_frame.grid(row=2, column=1, sticky=tk.W, padx=5)
-    for label, val in [("(sin cambio)", "(sin cambio)"), ("Sí, es multa", "si"), ("No es multa", "no")]:
-        tk.Radiobutton(multa_frame, text=label, variable=multa_var, value=val).pack(side=tk.LEFT)
+    multa_frame = tk.Frame(frame_form, bg=UI["surface"])
+    multa_frame.grid(row=2, column=1, sticky=tk.W, pady=6)
+    for label_text, val in [("(sin cambio)", "(sin cambio)"),
+                            ("Sí, es multa", "si"),
+                            ("No es multa", "no")]:
+        tk.Radiobutton(
+            multa_frame, text=label_text, variable=multa_var, value=val,
+            bg=UI["surface"], fg=UI["text"], font=UI["font_base"],
+            activebackground=UI["surface"], selectcolor=UI["surface"],
+            highlightthickness=0, cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(0, 12))
 
-    status_label = tk.Label(root, text="", fg="green", font=("Arial", 9))
-    status_label.pack(pady=2)
+    status_label = tk.Label(root, text="", fg=UI["success"],
+                             font=UI["font_small"], bg=UI["bg"])
+    status_label.pack(pady=(4, 0))
 
     def on_save():
         sel = listbox.curselection()
@@ -1470,7 +1609,11 @@ def show_revaluar_gui(config: Config) -> None:
         rd["gerencia"] = new_gerencia
         rd["plazo_str"] = new_plazo_str
         listbox.delete(idx)
-        listbox.insert(idx, f"Nro {rd['nro']}  |  {rd['categoria']}  |  {rd['gerencia']}  |  {rd['plazo_str']}  |  {rd['concepto'][:60]}")
+        listbox.insert(
+            idx,
+            f"  Nro {rd['nro']:<8}  │  {rd['categoria']:<18}  │  "
+            f"{rd['gerencia']:<18}  │  {rd['plazo_str']:<10}  │  {rd['concepto'][:60]}"
+        )
 
         status_label.config(text=f"Oficio Nro {rd['nro']} corregido correctamente.")
         logging.info("Corrección aplicada: Nro %s — %s", rd["nro"], updates)
@@ -1479,7 +1622,12 @@ def show_revaluar_gui(config: Config) -> None:
         plazo_entry.delete(0, tk.END)
         multa_var.set("(sin cambio)")
 
-    tk.Button(root, text="Guardar corrección", command=on_save, bg="#1F4E78", fg="white", font=("Arial", 10, "bold")).pack(pady=8)
+    btn_row = tk.Frame(root, bg=UI["bg"])
+    btn_row.pack(pady=(6, 14))
+    ui_button(btn_row, "Guardar corrección", command=on_save,
+              variant="success", width=22, icon="✓").pack(side=tk.LEFT, padx=5)
+    ui_button(btn_row, "Cerrar", command=root.destroy,
+              variant="ghost", width=12).pack(side=tk.LEFT, padx=5)
 
     root.mainloop()
 
@@ -1701,19 +1849,30 @@ def show_generar_informe_gui(config: Config) -> None:
 
     win = tk.Toplevel()
     win.title("Generar Informe de Multa")
-    win.geometry("750x400")
+    win.geometry("820x500")
+    win.configure(bg=UI["bg"])
     win.resizable(True, True)
 
-    header = tk.Frame(win, bg="#922B21", height=40)
-    header.pack(fill=tk.X)
-    header.pack_propagate(False)
-    tk.Label(header, text="Seleccione una multa para generar el informe",
-             bg="#922B21", fg="white", font=("Arial", 11, "bold")).pack(expand=True)
+    ui_header(win, "Informe de Multa",
+              subtitle="Seleccione una multa para generar el informe Word",
+              bg=UI["danger"])
 
-    frame_list = tk.Frame(win)
-    frame_list.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+    list_card = ui_card(win, fill=tk.BOTH, expand=True, padx=16, pady=(14, 8))
+    tk.Label(list_card, text="Multas registradas",
+             font=UI["font_heading"], bg=UI["surface"], fg=UI["text"]) \
+        .pack(anchor=tk.W, padx=14, pady=(12, 6))
 
-    listbox = tk.Listbox(frame_list, font=("Consolas", 9), selectmode=tk.SINGLE)
+    frame_list = tk.Frame(list_card, bg=UI["surface"])
+    frame_list.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 14))
+
+    listbox = tk.Listbox(
+        frame_list, font=UI["font_mono"], selectmode=tk.SINGLE,
+        bg=UI["surface"], fg=UI["text"],
+        selectbackground=UI["danger"], selectforeground="white",
+        relief=tk.FLAT, highlightthickness=1,
+        highlightbackground=UI["border"], highlightcolor=UI["danger"],
+        activestyle="none",
+    )
     scrollbar = tk.Scrollbar(frame_list, orient=tk.VERTICAL, command=listbox.yview)
     listbox.configure(yscrollcommand=scrollbar.set)
     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -1722,11 +1881,13 @@ def show_generar_informe_gui(config: Config) -> None:
     for md in multas_data:
         listbox.insert(
             tk.END,
-            f"Nro {md['nro']}  |  {md['categoria']}  |  {md['gerencia']}  |  {md['concepto'][:70]}"
+            f"  Nro {md['nro']:<8}  │  {md['categoria']:<18}  │  "
+            f"{md['gerencia']:<18}  │  {md['concepto'][:70]}"
         )
 
-    status_label = tk.Label(win, text="", fg="#922B21", font=("Arial", 9))
-    status_label.pack(pady=2)
+    status_label = tk.Label(win, text="", fg=UI["danger"],
+                             font=UI["font_small"], bg=UI["bg"])
+    status_label.pack(pady=(4, 0))
 
     def on_generate() -> None:
         sel = listbox.curselection()
@@ -1778,14 +1939,12 @@ def show_generar_informe_gui(config: Config) -> None:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    btn_frame = tk.Frame(win)
-    btn_frame.pack(pady=8)
-    tk.Button(btn_frame, text="Generar informe", command=on_generate,
-              bg="#922B21", fg="white", font=("Arial", 10, "bold"),
-              width=20, cursor="hand2").pack(side=tk.LEFT, padx=5)
-    tk.Button(btn_frame, text="Cerrar", command=win.destroy,
-              bg="#1F4E78", fg="white", font=("Arial", 10, "bold"),
-              width=12, cursor="hand2").pack(side=tk.LEFT, padx=5)
+    btn_frame = tk.Frame(win, bg=UI["bg"])
+    btn_frame.pack(pady=(6, 14))
+    ui_button(btn_frame, "Generar informe", command=on_generate,
+              variant="danger", width=22, icon="📝").pack(side=tk.LEFT, padx=5)
+    ui_button(btn_frame, "Cerrar", command=win.destroy,
+              variant="ghost", width=12).pack(side=tk.LEFT, padx=5)
 
 
 # ---------------------------------------------------------------------------
@@ -1793,39 +1952,60 @@ def show_generar_informe_gui(config: Config) -> None:
 # ---------------------------------------------------------------------------
 
 _PIE_COLORS = [
-    "#1F4E78", "#C55A11", "#375623", "#5B2C6F",
-    "#922B21", "#1A5276", "#D4AC0D", "#117A65",
+    "#1F4E78", "#C55A11", "#2E7D4F", "#5B2C6F",
+    "#922B21", "#1A7D8E", "#D4AC0D", "#117A65",
 ]
 
 
-def _draw_pie_chart(canvas: tk.Canvas, data: Dict[str, int], cx: int, cy: int, r: int) -> None:
-    """Dibuja un gráfico de torta en el canvas dado."""
+def _draw_pie_chart(canvas: tk.Canvas, data: Dict[str, int],
+                    cx: int, cy: int, r: int) -> None:
+    """Dibuja un gráfico de torta tipo donut con leyenda a la derecha."""
     total = sum(data.values())
     if total == 0:
         return
 
-    start = 0.0
     items = sorted(data.items(), key=lambda x: -x[1])
-    legend_y = cy - r
 
+    # Sombra sutil
+    canvas.create_oval(cx - r + 3, cy - r + 4, cx + r + 3, cy + r + 4,
+                       fill="#D6DEE7", outline="")
+
+    start = 90.0  # comenzar arriba
     for i, (label, count) in enumerate(items):
-        extent = count / total * 360
+        extent = -count / total * 360  # sentido horario
         color = _PIE_COLORS[i % len(_PIE_COLORS)]
         canvas.create_arc(
             cx - r, cy - r, cx + r, cy + r,
             start=start, extent=extent,
-            fill=color, outline="white", width=2,
+            fill=color, outline="white", width=3,
         )
         start += extent
 
-        # Leyenda a la derecha
-        lx = cx + r + 20
-        ly = legend_y + i * 22
-        canvas.create_rectangle(lx, ly, lx + 14, ly + 14, fill=color, outline=color)
+    # Agujero central (efecto donut)
+    hole = int(r * 0.55)
+    canvas.create_oval(cx - hole, cy - hole, cx + hole, cy + hole,
+                       fill=UI["surface"], outline="")
+    canvas.create_text(cx, cy - 8, text=f"{total}",
+                       fill=UI["text"], font=("Segoe UI", 18, "bold"))
+    canvas.create_text(cx, cy + 14, text="oficios",
+                       fill=UI["text_muted"], font=UI["font_small"])
+
+    # Leyenda a la derecha
+    lx = cx + r + 30
+    ly0 = cy - r + 6
+    for i, (label, count) in enumerate(items):
+        color = _PIE_COLORS[i % len(_PIE_COLORS)]
+        ly = ly0 + i * 24
+        canvas.create_oval(lx, ly + 1, lx + 12, ly + 13,
+                           fill=color, outline=color)
         pct = count * 100 / total
-        canvas.create_text(lx + 20, ly + 7, anchor=tk.W,
-                           text=f"{label}: {count} ({pct:.0f}%)",
-                           font=("Arial", 9))
+        canvas.create_text(lx + 22, ly + 7, anchor=tk.W,
+                           text=f"{label}",
+                           fill=UI["text"], font=UI["font_bold"])
+        canvas.create_text(lx + 22, ly + 20, anchor=tk.W,
+                           text=f"{count} oficios · {pct:.1f}%",
+                           fill=UI["text_muted"], font=UI["font_small"])
+        ly0 += 10  # espacio extra por línea inferior
 
 
 def show_estadisticas_gui(config: Config) -> None:
@@ -1864,54 +2044,80 @@ def show_estadisticas_gui(config: Config) -> None:
         messagebox.showinfo("Estadísticas", "No hay oficios registrados en el Excel.")
         return
 
-    lines = [f"Total de oficios registrados: {total}", ""]
-    lines.append("Por categoría:")
+    win = tk.Toplevel()
+    win.title("Estadísticas de Oficios")
+    win.geometry("880x720")
+    win.configure(bg=UI["bg"])
+    win.resizable(True, True)
+
+    ui_header(win, "Estadísticas de Oficios",
+              subtitle=f"Total de {total} oficios registrados",
+              bg=UI["info"])
+
+    # --- Fila de métricas (KPI cards) ---
+    kpi_row = tk.Frame(win, bg=UI["bg"])
+    kpi_row.pack(fill=tk.X, padx=16, pady=(14, 8))
+
+    def _kpi(parent: tk.Widget, value: str, label: str, color: str) -> None:
+        card = ui_card(parent, side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        tk.Label(card, text=value, font=("Segoe UI", 22, "bold"),
+                 bg=UI["surface"], fg=color).pack(pady=(12, 0))
+        tk.Label(card, text=label, font=UI["font_small"],
+                 bg=UI["surface"], fg=UI["text_muted"]).pack(pady=(2, 14))
+
+    _kpi(kpi_row, str(total), "Oficios totales", UI["primary"])
+    _kpi(kpi_row, str(len(areas)), "Áreas distintas", UI["success"])
+    _kpi(kpi_row, str(len(categorias)), "Categorías", UI["accent"])
+    _kpi(kpi_row, str(multas), "Multas detectadas", UI["danger"])
+
+    # --- Gráfico de torta (tarjeta) ---
+    chart_card = ui_card(win, fill=tk.X, padx=16, pady=8)
+    tk.Label(chart_card, text="Distribución por área responsable",
+             font=UI["font_heading"], bg=UI["surface"], fg=UI["text"]) \
+        .pack(anchor=tk.W, padx=14, pady=(12, 4))
+
+    n_areas = len(areas)
+    chart_w = max(620, 340 + n_areas * 28)
+    chart_h = max(280, 60 + n_areas * 34)
+    canvas = tk.Canvas(chart_card, width=chart_w, height=chart_h,
+                       bg=UI["surface"], highlightthickness=0)
+    canvas.pack(padx=14, pady=(0, 14))
+    _draw_pie_chart(canvas, dict(areas), cx=140, cy=chart_h // 2, r=110)
+
+    # --- Desglose detallado (tarjeta con texto) ---
+    detail_card = ui_card(win, fill=tk.BOTH, expand=True, padx=16, pady=8)
+    tk.Label(detail_card, text="Detalle",
+             font=UI["font_heading"], bg=UI["surface"], fg=UI["text"]) \
+        .pack(anchor=tk.W, padx=14, pady=(12, 4))
+
+    lines = ["Por categoría:"]
     for cat, n in sorted(categorias.items(), key=lambda x: -x[1]):
         pct = n * 100 / total
-        lines.append(f"  {cat}: {n}  ({pct:.0f}%)")
+        lines.append(f"   • {cat:<24} {n:>4}   ({pct:>5.1f}%)")
     lines.append("")
     lines.append("Por área responsable:")
     for area, n in sorted(areas.items(), key=lambda x: -x[1]):
         pct = n * 100 / total
-        lines.append(f"  {area}: {n}  ({pct:.0f}%)")
-    lines.append("")
-    lines.append(f"Multas / formulación de cargos: {multas}")
+        lines.append(f"   • {area:<24} {n:>4}   ({pct:>5.1f}%)")
     if fechas:
         lines.append("")
-        lines.append(f"Rango de fechas: {min(fechas).strftime('%d-%m-%Y')} — {max(fechas).strftime('%d-%m-%Y')}")
+        lines.append(
+            f"Rango de fechas: {min(fechas).strftime('%d-%m-%Y')} "
+            f"→ {max(fechas).strftime('%d-%m-%Y')}"
+        )
 
-    win = tk.Toplevel()
-    win.title("Estadísticas de Oficios")
-    win.geometry("700x600")
-    win.resizable(True, True)
-
-    header = tk.Frame(win, bg="#1F4E78", height=40)
-    header.pack(fill=tk.X)
-    header.pack_propagate(False)
-    tk.Label(header, text="Estadísticas de Oficios Analizados",
-             bg="#1F4E78", fg="white", font=("Arial", 12, "bold")).pack(expand=True)
-
-    text = tk.Text(win, font=("Consolas", 10), wrap=tk.WORD, padx=10, pady=10,
+    text = tk.Text(detail_card, font=UI["font_mono"], wrap=tk.WORD,
+                   bg=UI["surface"], fg=UI["text"],
+                   relief=tk.FLAT, bd=0, padx=14, pady=8,
                    height=10)
-    text.pack(fill=tk.X, padx=5, pady=5)
+    text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 12))
     text.insert(tk.END, "\n".join(lines))
     text.config(state=tk.DISABLED)
 
-    # Gráfico de torta de áreas
-    tk.Label(win, text="Distribución por área responsable",
-             font=("Arial", 11, "bold")).pack(pady=(5, 0))
-
-    n_areas = len(areas)
-    chart_w = max(500, 280 + n_areas * 22)
-    chart_h = max(260, 40 + n_areas * 22)
-    canvas = tk.Canvas(win, width=chart_w, height=chart_h, bg="white",
-                       highlightthickness=0)
-    canvas.pack(padx=10, pady=5)
-    _draw_pie_chart(canvas, dict(areas), cx=130, cy=chart_h // 2, r=100)
-
-    tk.Button(win, text="Cerrar", command=win.destroy,
-              bg="#1F4E78", fg="white", font=("Arial", 10, "bold"),
-              width=15).pack(pady=8)
+    btn_row = tk.Frame(win, bg=UI["bg"])
+    btn_row.pack(pady=(4, 14))
+    ui_button(btn_row, "Cerrar", command=win.destroy,
+              variant="primary", width=15).pack()
 
 
 # ---------------------------------------------------------------------------
@@ -1921,48 +2127,45 @@ def show_estadisticas_gui(config: Config) -> None:
 def launch_main_gui(config: Config) -> None:
     root = tk.Tk()
     root.title("Gestión de Oficios CGE")
-    root.geometry("440x440")
+    root.geometry("500x620")
+    root.configure(bg=UI["bg"])
     root.resizable(False, False)
 
-    # Encabezado
-    header = tk.Frame(root, bg="#1F4E78", height=65)
-    header.pack(fill=tk.X)
-    header.pack_propagate(False)
-    tk.Label(header, text="Gestión de Oficios CGE",
-             bg="#1F4E78", fg="white",
-             font=("Arial", 15, "bold")).pack(expand=True)
+    ui_header(
+        root, "Gestión de Oficios CGE",
+        subtitle="Centro de control · Comercial y Servicio al Cliente",
+        height=78,
+    )
 
-    status_var = tk.StringVar(value="Sistema listo.")
+    status_var = tk.StringVar(value="● Sistema listo")
 
     def set_status(msg: str) -> None:
         root.after(0, lambda: status_var.set(msg))
 
     def on_run_complete(result: Any) -> None:
         stats, multa_pdfs = result
-        btn_run.config(state=tk.NORMAL)
-        btn_reset.config(state=tk.NORMAL)
-        btn_revaluar.config(state=tk.NORMAL)
+        for b in (btn_run, btn_reset, btn_revaluar, btn_informe, btn_stats):
+            b.config(state=tk.NORMAL)
         if stats.total or stats.errores:
             show_summary_popup(stats)
         show_upcoming_deadlines_popup(config.excel_path)
         for pdf_path, extracted in multa_pdfs:
             ask_and_generate_informe(config, pdf_path, extracted)
         set_status(
-            f"Completado: {stats.total} PDF(s) procesado(s)."
-            if stats.total else "Sin PDFs nuevos."
+            f"✓ Completado: {stats.total} PDF(s) procesado(s)"
+            if stats.total else "● Sin PDFs nuevos"
         )
 
     def on_run_error(exc: Exception) -> None:
-        btn_run.config(state=tk.NORMAL)
-        btn_reset.config(state=tk.NORMAL)
-        btn_revaluar.config(state=tk.NORMAL)
+        for b in (btn_run, btn_reset, btn_revaluar, btn_informe, btn_stats):
+            b.config(state=tk.NORMAL)
         messagebox.showerror("Error", str(exc))
-        set_status("Error durante el procesamiento.")
+        set_status("✗ Error durante el procesamiento")
 
     def run_once_action() -> None:
-        for btn in (btn_run, btn_reset, btn_revaluar):
-            btn.config(state=tk.DISABLED)
-        set_status("Procesando PDFs, por favor espere...")
+        for b in (btn_run, btn_reset, btn_revaluar, btn_informe, btn_stats):
+            b.config(state=tk.DISABLED)
+        set_status("⏳ Procesando PDFs, por favor espere...")
 
         def worker() -> None:
             try:
@@ -1982,55 +2185,63 @@ def launch_main_gui(config: Config) -> None:
         ):
             reset_state(config)
             messagebox.showinfo("Listo", "Memoria reseteada correctamente.")
-            set_status("Memoria reseteada.")
+            set_status("✓ Memoria reseteada")
 
     def revaluar_action() -> None:
         show_revaluar_gui(config)
 
-    btn_style: Dict[str, Any] = {
-        "width": 26, "height": 2,
-        "font": ("Arial", 11, "bold"),
-        "relief": tk.FLAT, "cursor": "hand2",
-        "bd": 0,
-    }
-    btn_frame = tk.Frame(root, pady=20)
-    btn_frame.pack(expand=True)
-
-    btn_run = tk.Button(btn_frame, text="▶   Ejecutar una vez",
-                        command=run_once_action,
-                        bg="#1F4E78", fg="white", **btn_style)
-    btn_run.pack(pady=6)
-
-    btn_reset = tk.Button(btn_frame, text="↺   Resetear valores",
-                          command=reset_action,
-                          bg="#C55A11", fg="white", **btn_style)
-    btn_reset.pack(pady=6)
-
-    btn_revaluar = tk.Button(btn_frame, text="✎   Revaluar oficio",
-                             command=revaluar_action,
-                             bg="#375623", fg="white", **btn_style)
-    btn_revaluar.pack(pady=6)
-
     def informe_multa_action() -> None:
         show_generar_informe_gui(config)
-
-    btn_informe = tk.Button(btn_frame, text="📝   Informe de multa",
-                            command=informe_multa_action,
-                            bg="#922B21", fg="white", **btn_style)
-    btn_informe.pack(pady=6)
 
     def estadisticas_action() -> None:
         show_estadisticas_gui(config)
 
-    btn_stats = tk.Button(btn_frame, text="📊   Estadísticas",
-                          command=estadisticas_action,
-                          bg="#5B2C6F", fg="white", **btn_style)
-    btn_stats.pack(pady=6)
+    # --- Tarjeta principal con los botones ---
+    card = ui_card(root, fill=tk.BOTH, expand=True, padx=24, pady=20)
 
-    status_bar = tk.Label(root, textvariable=status_var,
-                          bd=1, relief=tk.SUNKEN, anchor=tk.W,
-                          font=("Arial", 9), fg="#555")
+    tk.Label(card, text="Acciones disponibles",
+             font=UI["font_heading"], bg=UI["surface"], fg=UI["text"]) \
+        .pack(anchor=tk.W, padx=22, pady=(18, 4))
+    tk.Label(card, text="Seleccione una operación",
+             font=UI["font_small"], bg=UI["surface"], fg=UI["text_muted"]) \
+        .pack(anchor=tk.W, padx=22, pady=(0, 14))
+
+    btn_frame = tk.Frame(card, bg=UI["surface"])
+    btn_frame.pack(expand=True, pady=(0, 18))
+
+    btn_run = ui_button(btn_frame, "Ejecutar una vez",
+                        command=run_once_action,
+                        variant="primary", icon="▶")
+    btn_run.pack(pady=5)
+
+    btn_reset = ui_button(btn_frame, "Resetear valores",
+                          command=reset_action,
+                          variant="accent", icon="↺")
+    btn_reset.pack(pady=5)
+
+    btn_revaluar = ui_button(btn_frame, "Revaluar oficio",
+                             command=revaluar_action,
+                             variant="success", icon="✎")
+    btn_revaluar.pack(pady=5)
+
+    btn_informe = ui_button(btn_frame, "Informe de multa",
+                            command=informe_multa_action,
+                            variant="danger", icon="📝")
+    btn_informe.pack(pady=5)
+
+    btn_stats = ui_button(btn_frame, "Estadísticas",
+                          command=estadisticas_action,
+                          variant="info", icon="📊")
+    btn_stats.pack(pady=5)
+
+    # --- Barra de estado minimalista ---
+    status_bar = tk.Frame(root, bg=UI["primary_dark"], height=28)
     status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+    status_bar.pack_propagate(False)
+    tk.Label(status_bar, textvariable=status_var,
+             bg=UI["primary_dark"], fg="white",
+             font=UI["font_small"], anchor=tk.W,
+             padx=14).pack(side=tk.LEFT, fill=tk.Y)
 
     root.mainloop()
 
