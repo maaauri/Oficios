@@ -74,13 +74,31 @@ Cuando un PDF menciona explícitamente otro oficio previo (frases como *"en resp
 
 ## Sistema de aprendizaje
 
-El sistema mejora la clasificación de áreas de forma acumulativa a partir de dos fuentes:
+El agente acumula experiencia de cuatro fuentes combinadas que se inyectan en el prompt en cada ejecución (fusión de `oficios_service` + `clasificador_oficios_v2`):
 
 ### 1. Historial del Excel
-Antes de cada extracción, lee el Excel y selecciona hasta 5 ejemplos recientes por área. Los inyecta en el prompt como contexto de clasificación. Se excluyen automáticamente los oficios cuyo concepto contiene **"solicita más información"**, ya que no representan patrones de clasificación útiles.
+Antes de cada extracción, lee el Excel y selecciona hasta 5 ejemplos recientes por área. Se excluyen los oficios con concepto **"solicita más información"**.
 
-### 2. Correcciones manuales (Revaluar)
-Las correcciones realizadas en la interfaz de Revaloración se guardan en `corrections.json` y se inyectan en el prompt con **mayor prioridad** que el historial. Esto garantiza que los ajustes explícitos del usuario siempre prevalezcan.
+### 2. Historial del agente (`historial_oficios.json`)
+Cada oficio procesado se guarda con su `area_propuesta`, `area_final`, `fue_corregido`, `keywords`, `remitente` y `confianza`. Cuando el usuario corrige un área en Revaluar, la entrada se marca como `fue_corregido=True`.
+
+El prompt incluye hasta 10 ejemplos **few-shot dinámicos** priorizando correcciones sobre confirmaciones (ratio 60/40), ya que las correcciones contienen la señal más valiosa.
+
+### 3. Correcciones manuales (`corrections.json`)
+Registra cada ajuste en el formulario de Revaluar con mayor prioridad que el historial general.
+
+### 4. Reglas auto-generadas (`reglas_clasificacion.json`)
+Cada 20 oficios procesados, el sistema llama a **Claude** para analizar el historial completo y destilar reglas de clasificación accionables por área (incluyendo reglas negativas *"NO clasificar como X si..."*). Estas reglas se inyectan con la prioridad más alta. Se pueden regenerar manualmente con:
+
+```bash
+python oficios_service.py --regenerar-reglas
+```
+
+### Campos extraídos por el agente
+Además de los campos base (número, categoría, fecha, concepto, gerencia, plazo), cada oficio incluye:
+- **`remitente`** — quien firma/envía el oficio
+- **`keywords`** — 3-6 términos clave que justifican la clasificación
+- **`confianza`** — score 0.0-1.0 de qué tan seguro está el modelo del área
 
 ---
 
@@ -103,10 +121,20 @@ Los cambios se aplican tanto al Excel como a `corrections.json`.
 
 El botón **📊 Estadísticas** en la interfaz gráfica muestra un resumen del Excel con:
 - Total de oficios registrados
+- **Accuracy del agente** (porcentaje de decisiones confirmadas sin corrección)
 - Desglose por categoría (con porcentaje)
-- Desglose por área responsable (con porcentaje)
+- Desglose por área responsable (con porcentaje) + gráfico de torta
 - Cantidad de multas / formulaciones de cargos
 - Rango de fechas de los oficios
+- **Accuracy por área** con barras visuales
+- **Errores más frecuentes** (qué área se confunde con cuál)
+- Estado de las reglas aprendidas (fecha de generación y base)
+
+También disponible por línea de comandos:
+
+```bash
+python oficios_service.py --stats
+```
 
 ---
 
@@ -148,6 +176,8 @@ Requiere una app registrada en **Azure AD** con permiso `Tasks.ReadWrite.All`.
 | `oficios_service.py` | Servicio principal |
 | `config.json` | Configuración |
 | `corrections.json` | Correcciones del usuario (generado automáticamente) |
+| `historial_oficios.json` | Historial de decisiones del agente con flag `fue_corregido` (generado) |
+| `reglas_clasificacion.json` | Reglas aprendidas por Claude del historial (generado cada 20 oficios) |
 | `informe_multa_template.docx` | Template Word del informe de multa |
 | `requirements.txt` | Dependencias Python |
 | `build.bat` | Script para compilar el ejecutable en Windows |
@@ -183,6 +213,8 @@ Genera la carpeta `dist\GestionOficios\` con el ejecutable y todas las dependenc
 | `python oficios_service.py --service` | Modo servicio continuo sin GUI |
 | `python oficios_service.py --reset` | Resetea la memoria de PDFs procesados |
 | `python oficios_service.py --revaluar` | Abre el formulario de revaloración |
+| `python oficios_service.py --stats` | Imprime métricas de accuracy del agente |
+| `python oficios_service.py --regenerar-reglas` | Regenera reglas de clasificación con Claude |
 | `python oficios_service.py --create-template` | Crea la plantilla Excel |
 
 ---

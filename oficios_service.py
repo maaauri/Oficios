@@ -72,6 +72,12 @@ SCHEMA = {
             "enum": ["dias_corridos", "dias_habiles", None],
         },
         "oficio_relacionado": {"type": ["string", "null"]},
+        "remitente": {"type": ["string", "null"]},
+        "keywords": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "confianza": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
     },
     "required": [
         "numero_oficio",
@@ -83,6 +89,9 @@ SCHEMA = {
         "plazo_relativo_cantidad",
         "plazo_relativo_tipo",
         "oficio_relacionado",
+        "remitente",
+        "keywords",
+        "confianza",
     ],
 }
 
@@ -145,9 +154,18 @@ Reglas de extracción y normalización:
      (expresiones como "en respuesta a", "en relación al Oficio N°", "complementa el Ord.", "adjunto al OC"),
      devuelve el número de ese documento (solo cifras o código, sin prefijos)
    - si no hay referencia a otro documento, devuelve null
-10. Si un dato no está claro o no existe, devuelve null.
-11. No agregues ningún texto fuera del JSON.
-12. No inventes datos.
+10. remitente:
+   - nombre de la persona u organismo que firma/envía el oficio (ej: "Superintendente SEC", "Jefe División Fiscalización")
+   - si no está claro, devuelve null
+11. keywords:
+   - lista de 3 a 6 palabras o frases cortas del documento que justifican la clasificación del área
+   - deben ser términos presentes en el PDF (no inventados)
+12. confianza:
+   - número entre 0.0 y 1.0 que refleja qué tan seguro estás de la clasificación del área (gerencia_responsable)
+   - 1.0 = el PDF menciona explícitamente el área o sus conceptos; 0.5 = dos áreas compiten; <0.5 = clasificación incierta
+13. Si un dato no está claro o no existe, devuelve null.
+14. No agregues ningún texto fuera del JSON.
+15. No inventes datos.
 """
 
 INFORME_MULTA_SCHEMA = {
@@ -249,6 +267,8 @@ class Config:
     excel_path: Path
     processed_state_path: Path
     corrections_path: Path
+    historial_path: Path
+    reglas_path: Path
     log_path: Path
     timezone: str
     run_time: str
@@ -302,6 +322,8 @@ def load_config(path: Path) -> Config:
         excel_path=Path(raw["excel_path"]),
         processed_state_path=Path(raw.get("processed_state_path", "processed_state.json")),
         corrections_path=Path(raw.get("corrections_path", "corrections.json")),
+        historial_path=Path(raw.get("historial_path", "historial_oficios.json")),
+        reglas_path=Path(raw.get("reglas_path", "reglas_clasificacion.json")),
         log_path=Path(raw.get("log_path", "oficios_service.log")),
         timezone=raw.get("timezone", "America/Santiago"),
         run_time=raw.get("run_time", "16:00"),
@@ -1299,6 +1321,251 @@ def build_history_prompt(excel_path: Path, max_per_area: int = 5) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Sistema de aprendizaje: historial, reglas auto-generadas y métricas
+# ---------------------------------------------------------------------------
+
+MAX_FEWSHOT = 10
+REGLAS_CADA_N = 20
+
+
+def load_historial(path: Path) -> List[Dict[str, Any]]:
+    """Carga el historial de clasificaciones (propuestas, correcciones)."""
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        logging.warning("Error leyendo historial %s: %s", path, exc)
+        return []
+
+
+def save_historial(path: Path, historial: List[Dict[str, Any]]) -> None:
+    ensure_parent(path)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(historial, f, ensure_ascii=False, indent=2)
+
+
+def add_to_historial(path: Path, extracted: Dict[str, Any],
+                     area_propuesta: str, area_final: str,
+                     pdf_name: str = "") -> Dict[str, Any]:
+    """Agrega una entrada al historial. fue_corregido=True si area cambió."""
+    historial = load_historial(path)
+    entry = {
+        "archivo": pdf_name,
+        "numero_oficio": extracted.get("numero_oficio", ""),
+        "categoria": extracted.get("categoria", ""),
+        "concepto": extracted.get("concepto", ""),
+        "remitente": extracted.get("remitente", ""),
+        "keywords": extracted.get("keywords", []) or [],
+        "confianza": extracted.get("confianza"),
+        "area_propuesta": area_propuesta,
+        "area_final": area_final,
+        "fue_corregido": (area_propuesta or "") != (area_final or ""),
+        "fecha_procesado": datetime.now().isoformat(),
+    }
+    historial.append(entry)
+    save_historial(path, historial)
+    return entry
+
+
+def mark_correction_in_historial(path: Path, nro: str, new_area: str) -> None:
+    """Marca como fue_corregido=True la entrada de un oficio revaluado."""
+    historial = load_historial(path)
+    changed = False
+    for entry in historial:
+        if str(entry.get("numero_oficio", "")).strip() == str(nro).strip():
+            if entry.get("area_final") != new_area:
+                entry["area_final"] = new_area
+                entry["fue_corregido"] = True
+                entry["fecha_revaluacion"] = datetime.now().isoformat()
+                changed = True
+    if changed:
+        save_historial(path, historial)
+
+
+def build_fewshot_from_historial(historial: List[Dict[str, Any]],
+                                 max_examples: int = MAX_FEWSHOT) -> str:
+    """Few-shot dinámico: prioriza correcciones (60/40) y los más recientes."""
+    if not historial:
+        return ""
+
+    _skip = re.compile(r"solicita\s+m[aá]s\s+informaci[oó]n", re.IGNORECASE)
+    filtered = [h for h in historial if not _skip.search(str(h.get("concepto", "")))]
+    if not filtered:
+        return ""
+
+    correcciones = [h for h in filtered if h.get("fue_corregido")]
+    confirmaciones = [h for h in filtered if not h.get("fue_corregido")]
+    n_corr = min(len(correcciones), max(1, int(max_examples * 0.6)))
+    n_conf = min(len(confirmaciones), max_examples - n_corr)
+    selected = correcciones[-n_corr:] + confirmaciones[-n_conf:]
+    if not selected:
+        return ""
+
+    lines = ["", "Ejemplos de clasificaciones anteriores (con prioridad a correcciones del usuario):"]
+    for i, ex in enumerate(selected, 1):
+        tag = "CORRECCIÓN" if ex.get("fue_corregido") else "Confirmado"
+        lines.append(f"  [{tag}] Oficio Nro {ex.get('numero_oficio', '?')}")
+        concepto = str(ex.get("concepto", ""))[:160]
+        if concepto:
+            lines.append(f"    Concepto: {concepto}")
+        kws = ex.get("keywords") or []
+        if kws:
+            lines.append(f"    Keywords: {', '.join(kws[:6])}")
+        if ex.get("fue_corregido"):
+            lines.append(
+                f"    Área propuesta (INCORRECTA): {ex.get('area_propuesta')} "
+                f"→ Área correcta: {ex.get('area_final')}"
+            )
+        else:
+            lines.append(f"    Área: {ex.get('area_final')}")
+    lines.append(
+        "\nUsa estos ejemplos como señal de alta prioridad, especialmente las correcciones."
+    )
+    return "\n".join(lines)
+
+
+def load_reglas(path: Path) -> Optional[str]:
+    """Carga el texto de reglas aprendidas (si existe)."""
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("reglas_texto")
+    except Exception:
+        return None
+
+
+def save_reglas(path: Path, reglas_texto: str, stats: Dict[str, Any]) -> None:
+    ensure_parent(path)
+    data = {
+        "generado": datetime.now().isoformat(),
+        "basado_en_n_oficios": stats.get("total", 0),
+        "accuracy_global": stats.get("accuracy", 0),
+        "reglas_texto": reglas_texto,
+    }
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def build_reglas_prompt(reglas_texto: Optional[str]) -> str:
+    """Inserta las reglas auto-generadas en el prompt principal."""
+    if not reglas_texto:
+        return ""
+    return (
+        "\n\nReglas de clasificación APRENDIDAS (generadas automáticamente a partir del historial "
+        "de decisiones del usuario — tienen prioridad sobre las reglas base cuando haya conflicto):\n"
+        + reglas_texto.strip()
+    )
+
+
+def generate_reglas(config: Config, historial: List[Dict[str, Any]]) -> Optional[str]:
+    """Usa Claude (Anthropic) para destilar reglas a partir del historial."""
+    if len(historial) < 5:
+        logging.info("Se requieren al menos 5 oficios para generar reglas (hay %s).",
+                     len(historial))
+        return None
+    if not config.informe_multa_api_key or config.informe_multa_api_key.startswith("REEMPLAZAR"):
+        logging.warning("No hay API key de Anthropic configurada; no se generan reglas.")
+        return None
+
+    resumen = []
+    for h in historial[-200:]:  # limitar para no exceder tokens
+        item = {
+            "concepto": (h.get("concepto") or "")[:220],
+            "keywords": h.get("keywords") or [],
+            "remitente": h.get("remitente") or "",
+            "area_final": h.get("area_final", ""),
+            "fue_corregido": h.get("fue_corregido", False),
+        }
+        if h.get("fue_corregido"):
+            item["area_propuesta_incorrecta"] = h.get("area_propuesta", "")
+        resumen.append(item)
+
+    prompt = (
+        "Eres un analista regulatorio de CGE. Analiza el siguiente historial de "
+        "clasificaciones de oficios SEC y genera REGLAS DE CLASIFICACIÓN concisas y "
+        f"accionables por cada una de estas áreas: {', '.join(AREAS_VALIDAS)}.\n\n"
+        "Presta ESPECIAL atención a las CORRECCIONES (donde el modelo se equivocó). "
+        "Incluye reglas negativas (\"NO clasificar como X si...\") cuando sean útiles. "
+        "Responde SOLO con texto plano (sin markdown ni JSON) en el formato:\n\n"
+        "ÁREA: <nombre>\n- Regla 1\n- Regla 2\n\n"
+        "Incluye al final una sección REGLAS GENERALES si hay patrones transversales.\n\n"
+        "HISTORIAL:\n" + json.dumps(resumen, ensure_ascii=False, indent=2)
+    )
+
+    payload = {
+        "model": config.informe_multa_model,
+        "max_tokens": 2000,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": config.informe_multa_api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    try:
+        resp = requests.post("https://api.anthropic.com/v1/messages",
+                             headers=headers, json=payload,
+                             timeout=config.request_timeout_seconds)
+        if not resp.ok:
+            logging.error("Anthropic generate_reglas error %s: %s",
+                          resp.status_code, resp.text)
+            return None
+        data = resp.json()
+        text = "".join(b.get("text", "") for b in data.get("content", [])
+                       if b.get("type") == "text").strip()
+        if not text:
+            return None
+        stats = compute_learning_stats(historial)
+        save_reglas(config.reglas_path, text, stats)
+        logging.info("Reglas de clasificación regeneradas (basadas en %s oficios).",
+                     stats["total"])
+        return text
+    except Exception as exc:
+        logging.exception("Error generando reglas: %s", exc)
+        return None
+
+
+def compute_learning_stats(historial: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Calcula métricas de accuracy del agente a partir del historial."""
+    if not historial:
+        return {"total": 0, "correctos": 0, "accuracy": 0.0,
+                "por_area": {}, "errores_frecuentes": []}
+
+    total = len(historial)
+    correctos = sum(1 for h in historial if not h.get("fue_corregido"))
+    accuracy = correctos / total if total else 0.0
+
+    por_area: Dict[str, Dict[str, Any]] = {}
+    for area in AREAS_VALIDAS:
+        entries = [h for h in historial if h.get("area_final") == area]
+        if entries:
+            ok = sum(1 for h in entries if not h.get("fue_corregido"))
+            por_area[area] = {
+                "total": len(entries),
+                "correctos": ok,
+                "accuracy": ok / len(entries),
+            }
+
+    errores = [
+        f"{h.get('area_propuesta')} → {h.get('area_final')}"
+        for h in historial if h.get("fue_corregido")
+    ]
+    errores_frecuentes = Counter(errores).most_common(5)
+
+    return {
+        "total": total,
+        "correctos": correctos,
+        "accuracy": accuracy,
+        "por_area": por_area,
+        "errores_frecuentes": errores_frecuentes,
+    }
+
+
 def save_corrections(path: Path, corrections: List[Dict[str, Any]]) -> None:
     ensure_parent(path)
     with path.open("w", encoding="utf-8") as f:
@@ -1600,6 +1867,12 @@ def show_revaluar_gui(config: Config) -> None:
         update_excel_row(excel_path, rd["nro"], rd["categoria"], updates, config.gerentes)
         save_corrections(config.corrections_path, corrections)
 
+        # Marcar la entrada en el historial como corregida (para aprendizaje)
+        if "gerencia_responsable" in updates:
+            mark_correction_in_historial(
+                config.historial_path, rd["nro"], updates["gerencia_responsable"]
+            )
+
         # Actualizar listbox
         new_gerencia = updates.get("gerencia_responsable", rd["gerencia"])
         new_plazo_str = rd["plazo_str"]
@@ -1706,11 +1979,15 @@ def process_directory(
     corrections = load_corrections(config.corrections_path)
     corrections_prompt = build_corrections_prompt(corrections)
     history_prompt = build_history_prompt(config.excel_path)
-    learning_prompt = history_prompt + corrections_prompt
+    historial = load_historial(config.historial_path)
+    fewshot_prompt = build_fewshot_from_historial(historial)
+    reglas_prompt = build_reglas_prompt(load_reglas(config.reglas_path))
+    learning_prompt = history_prompt + fewshot_prompt + corrections_prompt + reglas_prompt
 
     stats = ProcessingStats()
     multa_pdfs: List[Tuple[Path, Dict[str, Any]]] = []
     changed = False
+    procesados_esta_sesion = 0
     for pdf_path in pending:
         logging.info("Procesando %s", pdf_path.name)
         file_hash = sha256_file(pdf_path)
@@ -1752,11 +2029,22 @@ def process_directory(
             stats.registrar(extracted)
             nro = extracted.get("numero_oficio") or ""
             concepto = extracted.get("concepto") or ""
+            area_propuesta = extracted.get("gerencia_responsable") or ""
+            # Registrar en historial (en este momento area_propuesta == area_final;
+            # luego se marca corregido en la revaluación si el usuario lo ajusta).
+            add_to_historial(
+                config.historial_path, extracted,
+                area_propuesta=area_propuesta,
+                area_final=area_propuesta,
+                pdf_name=pdf_path.name,
+            )
             if is_multa(nro, concepto, corrections):
                 multa_pdfs.append((pdf_path, extracted))
             processed_hashes.add(file_hash)
             changed = True
-            logging.info("PDF procesado correctamente: %s", pdf_path.name)
+            procesados_esta_sesion += 1
+            logging.info("PDF procesado correctamente: %s (confianza=%s)",
+                         pdf_path.name, extracted.get("confianza"))
         except Exception as exc:
             stats.errores += 1
             logging.exception("Error procesando %s: %s", pdf_path.name, exc)
@@ -1764,6 +2052,20 @@ def process_directory(
     if changed:
         state["processed_hashes"] = sorted(processed_hashes)
         save_state(config.processed_state_path, state)
+
+    # Regenerar reglas cada REGLAS_CADA_N oficios procesados en total
+    try:
+        historial_actual = load_historial(config.historial_path)
+        total_hist = len(historial_actual)
+        reglas_existen = config.reglas_path.exists()
+        if procesados_esta_sesion > 0 and total_hist >= REGLAS_CADA_N and (
+            not reglas_existen
+            or (total_hist % REGLAS_CADA_N) < procesados_esta_sesion
+        ):
+            logging.info("Regenerando reglas de clasificación (total historial=%s)", total_hist)
+            generate_reglas(config, historial_actual)
+    except Exception as exc:
+        logging.warning("No se pudieron regenerar reglas: %s", exc)
 
     return stats, multa_pdfs
 
@@ -2046,7 +2348,7 @@ def show_estadisticas_gui(config: Config) -> None:
 
     win = tk.Toplevel()
     win.title("Estadísticas de Oficios")
-    win.geometry("880x720")
+    win.geometry("900x820")
     win.configure(bg=UI["bg"])
     win.resizable(True, True)
 
@@ -2065,8 +2367,12 @@ def show_estadisticas_gui(config: Config) -> None:
         tk.Label(card, text=label, font=UI["font_small"],
                  bg=UI["surface"], fg=UI["text_muted"]).pack(pady=(2, 14))
 
+    # Métricas de aprendizaje (historial de agente)
+    learning_stats = compute_learning_stats(load_historial(config.historial_path))
+    accuracy_pct = f"{learning_stats['accuracy'] * 100:.0f}%" if learning_stats["total"] else "—"
+
     _kpi(kpi_row, str(total), "Oficios totales", UI["primary"])
-    _kpi(kpi_row, str(len(areas)), "Áreas distintas", UI["success"])
+    _kpi(kpi_row, accuracy_pct, "Accuracy del agente", UI["success"])
     _kpi(kpi_row, str(len(categorias)), "Categorías", UI["accent"])
     _kpi(kpi_row, str(multas), "Multas detectadas", UI["danger"])
 
@@ -2106,10 +2412,54 @@ def show_estadisticas_gui(config: Config) -> None:
             f"→ {max(fechas).strftime('%d-%m-%Y')}"
         )
 
+    # Métricas del agente (aprendizaje)
+    if learning_stats["total"]:
+        lines.append("")
+        lines.append("Aprendizaje del agente:")
+        lines.append(
+            f"   • Historial: {learning_stats['total']} decisiones registradas"
+        )
+        lines.append(
+            f"   • Accuracy global: {learning_stats['accuracy'] * 100:.1f}%  "
+            f"({learning_stats['correctos']}/{learning_stats['total']})"
+        )
+        if learning_stats["por_area"]:
+            lines.append("")
+            lines.append("   Accuracy por área:")
+            for area, d in sorted(learning_stats["por_area"].items(),
+                                   key=lambda x: -x[1]["total"]):
+                bar = "█" * int(d["accuracy"] * 15) + "░" * (15 - int(d["accuracy"] * 15))
+                lines.append(
+                    f"      {area:<22} {bar}  {d['accuracy'] * 100:>3.0f}%  "
+                    f"({d['correctos']}/{d['total']})"
+                )
+        if learning_stats["errores_frecuentes"]:
+            lines.append("")
+            lines.append("   Errores más frecuentes (propuesta → corrección):")
+            for err, count in learning_stats["errores_frecuentes"]:
+                lines.append(f"      {err}  x{count}")
+        if config.reglas_path.exists():
+            try:
+                with config.reglas_path.open("r", encoding="utf-8") as f:
+                    rd = json.load(f)
+                lines.append("")
+                lines.append(
+                    f"   Reglas aprendidas: generadas el "
+                    f"{rd.get('generado', '?')[:10]} "
+                    f"(basadas en {rd.get('basado_en_n_oficios', '?')} oficios)"
+                )
+            except Exception:
+                pass
+        else:
+            lines.append("")
+            lines.append(
+                f"   Reglas aprendidas: se generarán al alcanzar {REGLAS_CADA_N} oficios"
+            )
+
     text = tk.Text(detail_card, font=UI["font_mono"], wrap=tk.WORD,
                    bg=UI["surface"], fg=UI["text"],
                    relief=tk.FLAT, bd=0, padx=14, pady=8,
-                   height=10)
+                   height=16)
     text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 12))
     text.insert(tk.END, "\n".join(lines))
     text.config(state=tk.DISABLED)
@@ -2269,6 +2619,16 @@ def main() -> None:
         action="store_true",
         help="Abre interfaz para corregir área o plazo de oficios ya procesados.",
     )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Imprime métricas de accuracy del agente en la terminal.",
+    )
+    parser.add_argument(
+        "--regenerar-reglas",
+        action="store_true",
+        help="Regenera reglas de clasificación usando Claude sobre el historial.",
+    )
     args = parser.parse_args()
 
     config = load_config(Path(args.config))
@@ -2285,6 +2645,38 @@ def main() -> None:
 
     if args.revaluar:
         show_revaluar_gui(config)
+        return
+
+    if args.stats:
+        historial = load_historial(config.historial_path)
+        if not historial:
+            print("No hay historial aún. Procesa algunos oficios primero.")
+            return
+        s = compute_learning_stats(historial)
+        print(f"\nTotal decisiones: {s['total']}")
+        print(f"Accuracy global:  {s['accuracy'] * 100:.1f}%  "
+              f"({s['correctos']}/{s['total']})")
+        if s["por_area"]:
+            print("\nAccuracy por área:")
+            for area, d in s["por_area"].items():
+                bar = "█" * int(d["accuracy"] * 20) + "░" * (20 - int(d["accuracy"] * 20))
+                print(f"  {area:<22} {bar}  {d['accuracy'] * 100:>3.0f}%  "
+                      f"({d['correctos']}/{d['total']})")
+        if s["errores_frecuentes"]:
+            print("\nErrores más frecuentes:")
+            for err, count in s["errores_frecuentes"]:
+                print(f"  {err:<45} x{count}")
+        return
+
+    if args.regenerar_reglas:
+        historial = load_historial(config.historial_path)
+        print(f"Regenerando reglas con {len(historial)} entradas del historial...")
+        reglas = generate_reglas(config, historial)
+        if reglas:
+            print(f"\nReglas guardadas en {config.reglas_path}\n")
+            print(reglas)
+        else:
+            print("No se pudieron generar reglas (revisa logs).")
         return
 
     if args.run_once:
