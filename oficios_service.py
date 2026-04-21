@@ -2330,7 +2330,7 @@ class OficiosApp(ctk.CTk):
             btn.configure(
                 text_color=pal["text"] if active else pal["subtext"],
                 font=_font(13, "semibold" if active else "normal"),
-                border_color=pal["accent"] if active else "transparent",
+                border_color=pal["accent"] if active else pal["bg"],
                 border_width=2 if active else 0,
             )
         if refresh:
