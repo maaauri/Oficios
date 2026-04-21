@@ -1916,9 +1916,14 @@ def _card(parent, pal: Dict, **kw) -> "ctk.CTkFrame":
         fg_color=pal["panel"],
         border_width=1,
         border_color=pal["border"],
-        corner_radius=10,
+        corner_radius=8,
         **kw,
     )
+
+
+def _tframe(parent, bg: str, **kw) -> tk.Frame:
+    """Lightweight transparent-equivalent frame using native tkinter."""
+    return tk.Frame(parent, bg=bg, **kw)
 
 
 class OficiosApp(ctk.CTk):
@@ -1936,7 +1941,7 @@ class OficiosApp(ctk.CTk):
         self._cached_oficios: Optional[List[Dict[str, Any]]] = None
         self._cached_kpis: Optional[Dict[str, Any]] = None
         self._search_after_id: Optional[str] = None
-        self._MAX_CARDS = 30
+        self._MAX_CARDS = 20
 
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
@@ -1948,7 +1953,7 @@ class OficiosApp(ctk.CTk):
 
         self._build_chrome()
         self._header_frame = self._build_header()
-        self._content_frame = ctk.CTkFrame(self, fg_color=self.pal["bg"], corner_radius=0)
+        self._content_frame = tk.Frame(self, bg=self.pal["bg"])
         self._content_frame.pack(fill="both", expand=True)
         self._footer_frame = self._build_footer()
 
@@ -1958,56 +1963,57 @@ class OficiosApp(ctk.CTk):
     # ── Window chrome (macOS-style dots) ─────────────────────────────────
 
     def _build_chrome(self) -> None:
-        chrome = ctk.CTkFrame(self, fg_color=self.pal["soft"],
-                               height=32, corner_radius=0)
+        bg = self.pal["soft"]
+        chrome = tk.Frame(self, bg=bg, height=32)
         chrome.pack(fill="x", side="top")
         chrome.pack_propagate(False)
-        dot_frame = ctk.CTkFrame(chrome, fg_color="transparent")
+        dot_frame = tk.Frame(chrome, bg=bg)
         dot_frame.pack(side="left", padx=14)
         for color in ("#ed6a5e", "#f5bf4f", "#62c554"):
-            ctk.CTkFrame(dot_frame, fg_color=color, width=11, height=11,
-                         corner_radius=6).pack(side="left", padx=3, pady=10)
-        ctk.CTkLabel(chrome, text="Gestión de Oficios CGE",
-                     text_color=self.pal["subtext"],
-                     font=_font(12), fg_color="transparent").pack(expand=True)
+            tk.Canvas(dot_frame, bg=color, width=11, height=11,
+                      highlightthickness=0).pack(side="left", padx=3, pady=10)
+        tk.Label(chrome, text="Gestión de Oficios CGE",
+                 fg=self.pal["subtext"], bg=bg,
+                 font=_font(12)).pack(expand=True)
 
     # ── Header ────────────────────────────────────────────────────────────
 
-    def _build_header(self) -> ctk.CTkFrame:
-        hdr = ctk.CTkFrame(self, fg_color=self.pal["panel"],
-                            border_width=0, corner_radius=0, height=62)
+    def _build_header(self) -> tk.Frame:
+        pal = self.pal
+        bg = pal["panel"]
+        hdr = tk.Frame(self, bg=bg, height=62)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
 
-        inner = ctk.CTkFrame(hdr, fg_color="transparent")
+        inner = tk.Frame(hdr, bg=bg)
         inner.pack(fill="both", expand=True, padx=28, pady=10)
 
         # Logo
-        logo = ctk.CTkFrame(inner, fg_color=self.pal["accent"],
+        logo = ctk.CTkFrame(inner, fg_color=pal["accent"],
                              width=32, height=32, corner_radius=7)
         logo.pack(side="left")
         logo.pack_propagate(False)
-        ctk.CTkLabel(logo, text="CGE", text_color="#ffffff",
-                     font=(FONT_UI, 12, "bold")).pack(expand=True)
+        tk.Label(logo, text="CGE", fg="#ffffff", bg=pal["accent"],
+                 font=(FONT_UI, 12, "bold")).pack(expand=True)
 
         # Title block
-        title_block = ctk.CTkFrame(inner, fg_color="transparent")
+        title_block = tk.Frame(inner, bg=bg)
         title_block.pack(side="left", padx=(10, 0))
-        ctk.CTkLabel(title_block, text="Gestión de Oficios",
-                     text_color=self.pal["text"],
-                     font=_font(15, "semibold")).pack(anchor="w")
-        ctk.CTkLabel(title_block, text="Comercial · Servicio al Cliente",
-                     text_color=self.pal["subtext"],
-                     font=_font(11)).pack(anchor="w")
+        tk.Label(title_block, text="Gestión de Oficios",
+                 fg=pal["text"], bg=bg,
+                 font=_font(15, "semibold")).pack(anchor="w")
+        tk.Label(title_block, text="Comercial · Servicio al Cliente",
+                 fg=pal["subtext"], bg=bg,
+                 font=_font(11)).pack(anchor="w")
 
         # Right side
-        right = ctk.CTkFrame(inner, fg_color="transparent")
+        right = tk.Frame(inner, bg=bg)
         right.pack(side="right")
 
         # Ejecutar button
         self._btn_run = ctk.CTkButton(
             right, text="▶  Ejecutar análisis",
-            fg_color=self.pal["accent"], hover_color=self.pal["blue"],
+            fg_color=pal["accent"], hover_color=pal["blue"],
             text_color="#ffffff", font=_font(12, "semibold"),
             height=32, corner_radius=6,
             command=self._on_run,
@@ -2015,16 +2021,15 @@ class OficiosApp(ctk.CTk):
         self._btn_run.pack(side="right", padx=(10, 0))
 
         # Tab nav (segmented control)
-        nav_bg = ctk.CTkFrame(right, fg_color=self.pal["soft"],
-                               corner_radius=8)
+        nav_bg = ctk.CTkFrame(right, fg_color=pal["soft"], corner_radius=8)
         nav_bg.pack(side="right")
 
         self._tab_btns: Dict[str, ctk.CTkButton] = {}
         for tab_id, tab_label in [("inicio", "Bandeja"), ("stats", "Estadísticas")]:
             btn = ctk.CTkButton(
                 nav_bg, text=tab_label,
-                fg_color="transparent", hover_color=self.pal["border"],
-                text_color=self.pal["text"],
+                fg_color="transparent", hover_color=pal["border"],
+                text_color=pal["text"],
                 font=_font(13), height=28, width=100, corner_radius=6,
                 command=lambda tid=tab_id: self._go(tid),
             )
@@ -2033,8 +2038,7 @@ class OficiosApp(ctk.CTk):
         self._update_tab_styles()
 
         # Bottom border line
-        border = ctk.CTkFrame(self, fg_color=self.pal["border"], height=1, corner_radius=0)
-        border.pack(fill="x")
+        tk.Frame(self, bg=pal["border"], height=1).pack(fill="x")
         return hdr
 
     def _update_tab_styles(self) -> None:
@@ -2048,37 +2052,33 @@ class OficiosApp(ctk.CTk):
 
     # ── Footer ────────────────────────────────────────────────────────────
 
-    def _build_footer(self) -> ctk.CTkFrame:
-        border = ctk.CTkFrame(self, fg_color=self.pal["border"], height=1, corner_radius=0)
-        border.pack(fill="x", side="bottom")
+    def _build_footer(self) -> tk.Frame:
+        pal = self.pal
+        bg = pal["panel"]
+        tk.Frame(self, bg=pal["border"], height=1).pack(fill="x", side="bottom")
 
-        ftr = ctk.CTkFrame(self, fg_color=self.pal["panel"],
-                            height=34, corner_radius=0)
+        ftr = tk.Frame(self, bg=bg, height=34)
         ftr.pack(fill="x", side="bottom")
         ftr.pack_propagate(False)
 
-        inner = ctk.CTkFrame(ftr, fg_color="transparent")
+        inner = tk.Frame(ftr, bg=bg)
         inner.pack(fill="both", expand=True, padx=28)
 
-        # Status dot + text
-        dot = ctk.CTkFrame(inner, fg_color=self.pal["success"],
-                            width=7, height=7, corner_radius=4)
-        dot.pack(side="left", pady=13)
+        tk.Canvas(inner, bg=pal["success"], width=7, height=7,
+                  highlightthickness=0).pack(side="left", pady=13)
 
-        self._status_label = ctk.CTkLabel(
+        self._status_label = tk.Label(
             inner, text=self._status_msg,
-            text_color=self.pal["subtext"], font=_font(11),
-            fg_color="transparent",
+            fg=pal["subtext"], bg=bg, font=_font(11),
         )
         self._status_label.pack(side="left", padx=(8, 0))
 
-        ctk.CTkLabel(inner, text="v2.5.0",
-                     text_color=self.pal["dim"], font=_font(10),
-                     fg_color="transparent").pack(side="right")
+        tk.Label(inner, text="v2.5.0",
+                 fg=pal["dim"], bg=bg, font=_font(10)).pack(side="right")
         return ftr
 
     def _set_status(self, msg: str, dot_color: Optional[str] = None) -> None:
-        self.after(0, lambda: self._status_label.configure(text=msg))
+        self.after(0, lambda: self._status_label.config(text=msg))
 
     # ── Data caching ─────────────────────────────────────────────────────
 
@@ -2108,24 +2108,27 @@ class OficiosApp(ctk.CTk):
             self._show_multa_placeholder()
 
     def _show_stats_placeholder(self) -> None:
-        f = ctk.CTkFrame(self._content_frame, fg_color="transparent")
+        bg = self.pal["bg"]
+        f = _tframe(self._content_frame, bg)
         f.pack(fill="both", expand=True, padx=28, pady=28)
-        ctk.CTkLabel(f, text="Estadísticas — próxima iteración",
-                     text_color=self.pal["subtext"], font=_font(14)).pack(expand=True)
+        tk.Label(f, text="Estadísticas — próxima iteración",
+                 fg=self.pal["subtext"], bg=bg, font=_font(14)).pack(expand=True)
 
     def _show_revaluar_placeholder(self) -> None:
-        f = ctk.CTkFrame(self._content_frame, fg_color="transparent")
+        bg = self.pal["bg"]
+        f = _tframe(self._content_frame, bg)
         f.pack(fill="both", expand=True, padx=28, pady=28)
         nro = (self._selected_oficio or {}).get("nro", "")
-        ctk.CTkLabel(f, text=f"Revaluar oficio {nro} — próxima iteración",
-                     text_color=self.pal["subtext"], font=_font(14)).pack(expand=True)
+        tk.Label(f, text=f"Revaluar oficio {nro} — próxima iteración",
+                 fg=self.pal["subtext"], bg=bg, font=_font(14)).pack(expand=True)
 
     def _show_multa_placeholder(self) -> None:
-        f = ctk.CTkFrame(self._content_frame, fg_color="transparent")
+        bg = self.pal["bg"]
+        f = _tframe(self._content_frame, bg)
         f.pack(fill="both", expand=True, padx=28, pady=28)
         nro = (self._selected_oficio or {}).get("nro", "")
-        ctk.CTkLabel(f, text=f"Informe de multa {nro} — próxima iteración",
-                     text_color=self.pal["subtext"], font=_font(14)).pack(expand=True)
+        tk.Label(f, text=f"Informe de multa {nro} — próxima iteración",
+                 fg=self.pal["subtext"], bg=bg, font=_font(14)).pack(expand=True)
 
     # ── Ejecutar analysis ─────────────────────────────────────────────────
 
@@ -2169,20 +2172,21 @@ class OficiosApp(ctk.CTk):
         kpis = self._cached_kpis
         oficios = self._cached_oficios
 
+        bg = pal["bg"]
+
         # Outer scroll container
         scroll = ctk.CTkScrollableFrame(
-            self._content_frame, fg_color=pal["bg"], corner_radius=0,
+            self._content_frame, fg_color=bg, corner_radius=0,
             scrollbar_button_color=pal["border"],
             scrollbar_button_hover_color=pal["borderStrong"],
         )
         scroll.pack(fill="both", expand=True)
 
-        pad_x = 28
-        inner = ctk.CTkFrame(scroll, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=pad_x, pady=(20, 28))
+        inner = _tframe(scroll, bg)
+        inner.pack(fill="both", expand=True, padx=28, pady=(20, 28))
 
         # ── KPI row ───────────────────────────────────────────────────────
-        kpi_row = ctk.CTkFrame(inner, fg_color="transparent")
+        kpi_row = _tframe(inner, bg)
         kpi_row.pack(fill="x", pady=(0, 14))
         for i in range(4):
             kpi_row.columnconfigure(i, weight=1, uniform="kpi")
@@ -2205,46 +2209,39 @@ class OficiosApp(ctk.CTk):
         criticos_list = [o for o in oficios
                          if o["diasRest"] is not None and 0 <= o["diasRest"] <= 5]
         if criticos_list:
-            alert = ctk.CTkFrame(inner, fg_color=pal["warnSoft"],
-                                  border_width=1, border_color=pal["border"],
-                                  corner_radius=10)
+            alert_bg = pal["warnSoft"]
+            alert = tk.Frame(inner, bg=alert_bg)
             alert.pack(fill="x", pady=(0, 14))
-            alert_inner = ctk.CTkFrame(alert, fg_color="transparent")
+            alert_inner = tk.Frame(alert, bg=alert_bg)
             alert_inner.pack(fill="x", padx=16, pady=12)
 
-            # ! circle
-            dot_f = ctk.CTkFrame(alert_inner, fg_color=pal["warn"],
-                                  width=28, height=28, corner_radius=14)
-            dot_f.pack(side="left")
-            dot_f.pack_propagate(False)
-            ctk.CTkLabel(dot_f, text="!", text_color="#fff",
-                         font=_font(14, "bold")).pack(expand=True)
+            tk.Label(alert_inner, text="⚠", fg=pal["warn"], bg=alert_bg,
+                     font=_font(16, "bold")).pack(side="left")
 
-            # text
-            txt_f = ctk.CTkFrame(alert_inner, fg_color="transparent")
+            txt_f = tk.Frame(alert_inner, bg=alert_bg)
             txt_f.pack(side="left", padx=(12, 0), fill="x", expand=True)
             n = len(criticos_list)
-            ctk.CTkLabel(txt_f,
-                         text=f"{n} oficio{'s' if n > 1 else ''} con plazo en menos de 5 días",
-                         text_color=pal["text"], font=_font(13, "semibold"),
-                         anchor="w").pack(anchor="w")
+            tk.Label(txt_f,
+                     text=f"{n} oficio{'s' if n > 1 else ''} con plazo en menos de 5 días",
+                     fg=pal["text"], bg=alert_bg, font=_font(13, "semibold"),
+                     anchor="w").pack(anchor="w")
             detail = "  ·  ".join(
                 f"{o['nro']} vence en {o['diasRest']}d"
                 + (" (multa)" if o["multa"] else "")
                 for o in criticos_list[:4]
             )
-            ctk.CTkLabel(txt_f, text=detail,
-                         text_color=pal["subtext"], font=_font(11),
-                         anchor="w").pack(anchor="w", pady=(2, 0))
+            tk.Label(txt_f, text=detail,
+                     fg=pal["subtext"], bg=alert_bg, font=_font(11),
+                     anchor="w").pack(anchor="w", pady=(2, 0))
 
         # ── Filter tabs + search ──────────────────────────────────────────
         self._bandeja_tab = tk.StringVar(value="hoy")
         self._bandeja_q = tk.StringVar(value="")
 
-        tab_bar_outer = ctk.CTkFrame(inner, fg_color="transparent")
+        tab_bar_outer = _tframe(inner, bg)
         tab_bar_outer.pack(fill="x", pady=(0, 2))
 
-        tabs_frame = ctk.CTkFrame(tab_bar_outer, fg_color="transparent")
+        tabs_frame = _tframe(tab_bar_outer, bg)
         tabs_frame.pack(side="left")
 
         multas_count = sum(1 for o in oficios if o["multa"])
@@ -2257,7 +2254,7 @@ class OficiosApp(ctk.CTk):
             ("todos",   "Histórico", len(oficios),   None),
         ]
 
-        self._tab_filter_btns: Dict[str, ctk.CTkButton] = {}
+        self._tab_filter_btns: Dict[str, Tuple] = {}
         for tid, tlabel, tcount, tone in tab_defs:
             btn = self._tab_btn(tabs_frame, tid, tlabel, tcount, tone,
                                 lambda t=tid: self._set_bandeja_tab(t))
@@ -2265,28 +2262,24 @@ class OficiosApp(ctk.CTk):
         self._set_bandeja_tab("hoy", refresh=False)
 
         # Search
-        search_wrap = ctk.CTkFrame(tab_bar_outer, fg_color=pal["panel"],
-                                    border_width=1, border_color=pal["border"],
-                                    corner_radius=6)
+        search_wrap = tk.Frame(tab_bar_outer, bg=pal["panel"],
+                               highlightbackground=pal["border"], highlightthickness=1)
         search_wrap.pack(side="right")
-        ctk.CTkLabel(search_wrap, text="⌕", text_color=pal["subtext"],
-                     font=_font(12), fg_color="transparent").pack(side="left", padx=(8, 2))
-        search_entry = ctk.CTkEntry(
+        tk.Label(search_wrap, text="⌕", fg=pal["subtext"], bg=pal["panel"],
+                 font=_font(12)).pack(side="left", padx=(8, 2))
+        search_entry = tk.Entry(
             search_wrap, textvariable=self._bandeja_q,
-            placeholder_text="Buscar por nro, asunto, área…",
-            width=230, height=30, border_width=0,
-            fg_color="transparent", text_color=pal["text"],
-            font=_font(12),
+            width=28, font=_font(12), bd=0, bg=pal["panel"],
+            fg=pal["text"], insertbackground=pal["text"],
         )
-        search_entry.pack(side="left", padx=(0, 8))
+        search_entry.pack(side="left", padx=(0, 8), pady=4)
         self._bandeja_q.trace_add("write", lambda *_: self._debounced_refresh())
 
         # Tab underline
-        tab_line = ctk.CTkFrame(inner, fg_color=pal["border"], height=1, corner_radius=0)
-        tab_line.pack(fill="x", pady=(0, 14))
+        tk.Frame(inner, bg=pal["border"], height=1).pack(fill="x", pady=(0, 14))
 
         # ── Cards grid ────────────────────────────────────────────────────
-        self._cards_container = ctk.CTkFrame(inner, fg_color="transparent")
+        self._cards_container = _tframe(inner, bg)
         self._cards_container.pack(fill="both", expand=True)
         self._cards_container.columnconfigure(0, weight=1, uniform="card")
         self._cards_container.columnconfigure(1, weight=1, uniform="card")
@@ -2300,54 +2293,45 @@ class OficiosApp(ctk.CTk):
         card = _card(parent, pal)
         card.grid(row=0, column=col, padx=(0 if col == 0 else 6, 0), sticky="nsew")
 
-        ctk.CTkLabel(card, text=icon, text_color=pal["dim"],
-                     font=_font(18), fg_color="transparent",
-                     anchor="e").place(relx=1.0, rely=0.0, x=-14, y=14)
+        panel_bg = pal["panel"]
+        tk.Label(card, text=icon, fg=pal["dim"], bg=panel_bg,
+                 font=_font(18), anchor="e").place(relx=1.0, rely=0.0, x=-14, y=14)
 
-        body = ctk.CTkFrame(card, fg_color="transparent")
+        body = tk.Frame(card, bg=panel_bg)
         body.pack(padx=16, pady=14, anchor="w")
-        ctk.CTkLabel(body, text=label,
-                     text_color=pal["subtext"], font=_font(11),
-                     anchor="w").pack(anchor="w")
-        ctk.CTkLabel(body, text=val,
-                     text_color=color, font=_font(28, "bold"),
-                     anchor="w").pack(anchor="w", pady=(2, 0))
-        ctk.CTkLabel(body, text=sub,
-                     text_color=color if color != pal["text"] else pal["subtext"],
-                     font=_font(11), anchor="w").pack(anchor="w", pady=(2, 0))
+        tk.Label(body, text=label, fg=pal["subtext"], bg=panel_bg,
+                 font=_font(11), anchor="w").pack(anchor="w")
+        tk.Label(body, text=val, fg=color, bg=panel_bg,
+                 font=_font(28, "bold"), anchor="w").pack(anchor="w", pady=(2, 0))
+        tk.Label(body, text=sub,
+                 fg=color if color != pal["text"] else pal["subtext"],
+                 bg=panel_bg, font=_font(11), anchor="w").pack(anchor="w", pady=(2, 0))
 
     def _tab_btn(self, parent, tid: str, label: str, count: int,
-                 tone: Optional[str], command) -> ctk.CTkButton:
+                 tone: Optional[str], command) -> tk.Frame:
         pal = self.pal
-        badge_bg = pal["warnSoft"] if tone == "warn" else (
-            pal["dangerSoft"] if tone == "danger" else pal["soft"])
-        badge_fg = pal["warn"] if tone == "warn" else (
-            pal["danger"] if tone == "danger" else pal["subtext"])
-
-        # We store as a frame with two inner labels so we can fake "underline"
-        frame = ctk.CTkFrame(parent, fg_color="transparent", cursor="hand2")
-        btn = ctk.CTkButton(
-            frame, text=f"{label}  {count}",
-            fg_color="transparent", hover_color=pal["soft"],
-            text_color=pal["subtext"], font=_font(13),
-            height=36, corner_radius=0, border_width=0,
-            command=command,
-        )
-        btn.pack()
-        self._tab_filter_btns[tid] = btn
+        bg = pal["bg"]
+        frame = tk.Frame(parent, bg=bg, cursor="hand2")
+        lbl = tk.Label(frame, text=f"{label}  {count}",
+                       fg=pal["subtext"], bg=bg, font=_font(13),
+                       padx=10, pady=8, cursor="hand2")
+        lbl.pack()
+        lbl.bind("<Button-1>", lambda e: command())
+        underline = tk.Frame(frame, bg=bg, height=2)
+        underline.pack(fill="x")
+        self._tab_filter_btns[tid] = (lbl, underline)
         return frame
 
     def _set_bandeja_tab(self, tid: str, refresh: bool = True) -> None:
         pal = self.pal
         self._bandeja_tab.set(tid)
-        for t, btn in self._tab_filter_btns.items():
+        for t, (lbl, underline) in self._tab_filter_btns.items():
             active = t == tid
-            btn.configure(
-                text_color=pal["text"] if active else pal["subtext"],
+            lbl.config(
+                fg=pal["text"] if active else pal["subtext"],
                 font=_font(13, "semibold" if active else "normal"),
-                border_color=pal["accent"] if active else pal["bg"],
-                border_width=2 if active else 0,
             )
+            underline.config(bg=pal["accent"] if active else pal["bg"])
         if refresh:
             self._refresh_cards()
 
@@ -2379,15 +2363,13 @@ class OficiosApp(ctk.CTk):
         total_filtered = len(oficios)
         oficios = oficios[:self._MAX_CARDS]
 
+        bg = pal["bg"]
         if not oficios:
-            empty = ctk.CTkFrame(self._cards_container, fg_color="transparent",
-                                  border_width=1, border_color=pal["border"],
-                                  corner_radius=10)
-            empty.grid(row=0, column=0, columnspan=2, sticky="nsew",
-                       padx=0, pady=0)
-            ctk.CTkLabel(empty, text="Sin oficios para este filtro.",
-                         text_color=pal["subtext"], font=_font(13)).pack(
-                             pady=40)
+            empty = tk.Frame(self._cards_container, bg=bg,
+                             highlightbackground=pal["border"], highlightthickness=1)
+            empty.grid(row=0, column=0, columnspan=2, sticky="nsew")
+            tk.Label(empty, text="Sin oficios para este filtro.",
+                     fg=pal["subtext"], bg=bg, font=_font(13)).pack(pady=40)
             return
 
         for idx, oficio in enumerate(oficios):
@@ -2399,28 +2381,25 @@ class OficiosApp(ctk.CTk):
 
         if total_filtered > self._MAX_CARDS:
             more = total_filtered - self._MAX_CARDS
-            ctk.CTkLabel(
+            tk.Label(
                 self._cards_container,
                 text=f"… y {more} oficio{'s' if more > 1 else ''} más — usa la búsqueda para refinar.",
-                text_color=pal["subtext"], font=_font(12),
+                fg=pal["subtext"], bg=bg, font=_font(12),
             ).grid(row=(len(oficios) // 2) + 1, column=0, columnspan=2, pady=(8, 0))
 
     def _oficio_card(self, parent, o: Dict[str, Any],
                      row: int, col: int, pad_left: int) -> None:
         pal = self.pal
+        pbg = pal["panel"]
         dias = o["diasRest"]
         if dias is None:
-            tc = pal["subtext"]
-            bg_chip = pal["soft"]
+            tc = pal["subtext"]; bg_chip = pal["soft"]
         elif dias <= 3:
-            tc = pal["danger"]
-            bg_chip = pal["dangerSoft"]
+            tc = pal["danger"]; bg_chip = pal["dangerSoft"]
         elif dias <= 5:
-            tc = pal["warn"]
-            bg_chip = pal["warnSoft"]
+            tc = pal["warn"]; bg_chip = pal["warnSoft"]
         else:
-            tc = pal["success"]
-            bg_chip = pal["successSoft"]
+            tc = pal["success"]; bg_chip = pal["successSoft"]
 
         area_key = AREA_COLOR_MAP.get(o["area"], "blue")
         area_color = pal[area_key]
@@ -2430,74 +2409,53 @@ class OficiosApp(ctk.CTk):
                   padx=(pad_left, 0), pady=(0, 12))
         card.columnconfigure(0, weight=1)
 
-        # ── Top row: nro + tipo + chips ─────────────────────────────
-        top = ctk.CTkFrame(card, fg_color="transparent")
+        top = tk.Frame(card, bg=pbg)
         top.pack(fill="x", padx=16, pady=(14, 0))
 
-        ctk.CTkLabel(top, text=o["nro"],
-                     text_color=pal["text"], font=_mono(12, "bold"),
-                     fg_color="transparent").pack(side="left")
-        ctk.CTkLabel(top, text=f"· {o['tipo']}",
-                     text_color=pal["subtext"], font=_font(11),
-                     fg_color="transparent").pack(side="left", padx=(4, 0))
+        tk.Label(top, text=o["nro"], fg=pal["text"], bg=pbg,
+                 font=_mono(12, "bold")).pack(side="left")
+        tk.Label(top, text=f"· {o['tipo']}", fg=pal["subtext"], bg=pbg,
+                 font=_font(11)).pack(side="left", padx=(4, 0))
 
-        # dias chip
         dias_txt = f"{dias}d" if dias is not None else "—"
-        ctk.CTkLabel(top, text=dias_txt,
-                     text_color=tc, fg_color=bg_chip,
-                     font=_font(10, "bold"), corner_radius=4,
-                     padx=8, pady=2).pack(side="right")
+        tk.Label(top, text=dias_txt, fg=tc, bg=bg_chip,
+                 font=_font(10, "bold"), padx=6, pady=1).pack(side="right")
 
-        # multa chip
         if o["multa"]:
-            ctk.CTkLabel(top, text="MULTA",
-                         text_color=pal["warn"], fg_color=pal["warnSoft"],
-                         font=_font(10, "bold"), corner_radius=4,
-                         padx=8, pady=2).pack(side="right", padx=(0, 6))
+            tk.Label(top, text="MULTA", fg=pal["warn"], bg=pal["warnSoft"],
+                     font=_font(10, "bold"), padx=6, pady=1).pack(side="right", padx=(0, 6))
 
-        # ── Asunto ───────────────────────────────────────────────────
         asunto = o["asunto"][:130] + ("…" if len(o["asunto"]) > 130 else "")
-        ctk.CTkLabel(card, text=asunto,
-                     text_color=pal["text"], font=_font(13),
-                     anchor="w", justify="left", wraplength=480).pack(
-                         fill="x", padx=16, pady=(8, 0))
+        tk.Label(card, text=asunto, fg=pal["text"], bg=pbg,
+                 font=_font(13), anchor="w", justify="left",
+                 wraplength=480).pack(fill="x", padx=16, pady=(8, 0))
 
-        # ── Footer: area dot + name + plazo + action buttons ─────────
-        sep = ctk.CTkFrame(card, fg_color=pal["border"], height=1, corner_radius=0)
-        sep.pack(fill="x", padx=16, pady=(10, 0))
+        tk.Frame(card, bg=pal["border"], height=1).pack(fill="x", padx=16, pady=(10, 0))
 
-        footer = ctk.CTkFrame(card, fg_color="transparent")
+        footer = tk.Frame(card, bg=pbg)
         footer.pack(fill="x", padx=16, pady=(8, 14))
 
-        # Area dot
-        ctk.CTkFrame(footer, fg_color=area_color,
-                     width=8, height=8, corner_radius=4).pack(
-                         side="left", pady=4)
-        ctk.CTkLabel(footer, text=o["area"],
-                     text_color=pal["text"], font=_font(11),
-                     fg_color="transparent").pack(side="left", padx=(6, 0))
+        tk.Canvas(footer, bg=area_color, width=8, height=8,
+                  highlightthickness=0).pack(side="left", pady=4)
+        tk.Label(footer, text=o["area"], fg=pal["text"], bg=pbg,
+                 font=_font(11)).pack(side="left", padx=(6, 0))
         if o["plazo"]:
-            ctk.CTkLabel(footer, text=f"· {o['plazo']}",
-                         text_color=pal["subtext"], font=_font(11),
-                         fg_color="transparent").pack(side="left", padx=(4, 0))
+            tk.Label(footer, text=f"· {o['plazo']}", fg=pal["subtext"], bg=pbg,
+                     font=_font(11)).pack(side="left", padx=(4, 0))
 
-        # Action buttons
         if o["multa"]:
-            ctk.CTkButton(
-                footer, text="Informe",
-                fg_color="transparent", hover_color=pal["soft"],
-                text_color=pal["text"], border_width=1,
-                border_color=pal["border"],
-                font=_font(11), height=26, width=70, corner_radius=6,
+            btn_i = tk.Button(
+                footer, text="Informe", fg=pal["text"], bg=pbg,
+                activebackground=pal["soft"], font=_font(11),
+                bd=1, relief="solid", padx=8, pady=2, cursor="hand2",
                 command=lambda oficio=o: self._go("multa", oficio),
-            ).pack(side="right", padx=(6, 0))
+            )
+            btn_i.pack(side="right", padx=(6, 0))
 
-        ctk.CTkButton(
-            footer, text="Revaluar",
-            fg_color="transparent", hover_color=pal["soft"],
-            text_color=pal["text"], border_width=1,
-            border_color=pal["border"],
-            font=_font(11), height=26, width=74, corner_radius=6,
+        tk.Button(
+            footer, text="Revaluar", fg=pal["text"], bg=pbg,
+            activebackground=pal["soft"], font=_font(11),
+            bd=1, relief="solid", padx=8, pady=2, cursor="hand2",
             command=lambda oficio=o: self._go("revaluar", oficio),
         ).pack(side="right")
 
