@@ -1933,6 +1933,10 @@ class OficiosApp(ctk.CTk):
         self._selected_oficio: Optional[Dict[str, Any]] = None
         self._status_msg = "Sistema listo"
         self._last_run_info = ""
+        self._cached_oficios: Optional[List[Dict[str, Any]]] = None
+        self._cached_kpis: Optional[Dict[str, Any]] = None
+        self._search_after_id: Optional[str] = None
+        self._MAX_CARDS = 30
 
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
@@ -1948,6 +1952,7 @@ class OficiosApp(ctk.CTk):
         self._content_frame.pack(fill="both", expand=True)
         self._footer_frame = self._build_footer()
 
+        self._reload_data()
         self._show_bandeja()
 
     # ── Window chrome (macOS-style dots) ─────────────────────────────────
@@ -2075,6 +2080,13 @@ class OficiosApp(ctk.CTk):
     def _set_status(self, msg: str, dot_color: Optional[str] = None) -> None:
         self.after(0, lambda: self._status_label.configure(text=msg))
 
+    # ── Data caching ─────────────────────────────────────────────────────
+
+    def _reload_data(self) -> None:
+        kpis = get_bandeja_kpis(self.config)
+        self._cached_kpis = kpis
+        self._cached_oficios = kpis["oficios"]
+
     # ── Screen switching ──────────────────────────────────────────────────
 
     def _go(self, screen: str, payload: Optional[Dict] = None) -> None:
@@ -2137,8 +2149,9 @@ class OficiosApp(ctk.CTk):
         msg = (f"✓ Completado: {stats.total} PDF(s) procesado(s)"
                if stats.total else "● Sin PDFs nuevos")
         self._set_status(msg)
+        self._reload_data()
         if self._screen == "inicio":
-            self._go("inicio")  # refresh bandeja
+            self._go("inicio")
         for pdf_path, extracted in multa_pdfs:
             ask_and_generate_informe(self.config, pdf_path, extracted)
 
@@ -2151,8 +2164,10 @@ class OficiosApp(ctk.CTk):
 
     def _show_bandeja(self) -> None:
         pal = self.pal
-        kpis = get_bandeja_kpis(self.config)
-        oficios = kpis["oficios"]
+        if self._cached_kpis is None:
+            self._reload_data()
+        kpis = self._cached_kpis
+        oficios = self._cached_oficios
 
         # Outer scroll container
         scroll = ctk.CTkScrollableFrame(
@@ -2264,7 +2279,7 @@ class OficiosApp(ctk.CTk):
             font=_font(12),
         )
         search_entry.pack(side="left", padx=(0, 8))
-        self._bandeja_q.trace_add("write", lambda *_: self._refresh_cards())
+        self._bandeja_q.trace_add("write", lambda *_: self._debounced_refresh())
 
         # Tab underline
         tab_line = ctk.CTkFrame(inner, fg_color=pal["border"], height=1, corner_radius=0)
@@ -2336,7 +2351,13 @@ class OficiosApp(ctk.CTk):
         if refresh:
             self._refresh_cards()
 
+    def _debounced_refresh(self) -> None:
+        if self._search_after_id is not None:
+            self.after_cancel(self._search_after_id)
+        self._search_after_id = self.after(300, self._refresh_cards)
+
     def _refresh_cards(self) -> None:
+        self._search_after_id = None
         for w in self._cards_container.winfo_children():
             w.destroy()
 
@@ -2355,6 +2376,9 @@ class OficiosApp(ctk.CTk):
             oficios = [o for o in oficios
                        if q in (o["nro"] + o["asunto"] + o["area"]).lower()]
 
+        total_filtered = len(oficios)
+        oficios = oficios[:self._MAX_CARDS]
+
         if not oficios:
             empty = ctk.CTkFrame(self._cards_container, fg_color="transparent",
                                   border_width=1, border_color=pal["border"],
@@ -2372,6 +2396,14 @@ class OficiosApp(ctk.CTk):
             pad_left = 0 if col_idx == 0 else 6
             self._oficio_card(self._cards_container, oficio,
                               row_idx, col_idx, pad_left)
+
+        if total_filtered > self._MAX_CARDS:
+            more = total_filtered - self._MAX_CARDS
+            ctk.CTkLabel(
+                self._cards_container,
+                text=f"… y {more} oficio{'s' if more > 1 else ''} más — usa la búsqueda para refinar.",
+                text_color=pal["subtext"], font=_font(12),
+            ).grid(row=(len(oficios) // 2) + 1, column=0, columnspan=2, pady=(8, 0))
 
     def _oficio_card(self, parent, o: Dict[str, Any],
                      row: int, col: int, pad_left: int) -> None:
