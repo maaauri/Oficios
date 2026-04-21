@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>App Oficios CGE — V5 Minimal (prototipo)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #eef1f5; font-family: Inter, system-ui, sans-serif; overflow: hidden; }
+  * { box-sizing: border-box; }
+  #stage { display: flex; align-items: center; justify-content: center; height: 100vh; padding: 24px; }
+  #frame { width: 1240px; height: 820px; background: #fff; border-radius: 12px; overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 20px 60px rgba(0,0,0,0.12); display: flex; flex-direction: column; }
+  #frame.dark { background: #0f1722; }
+
+  /* Window chrome */
+  .chrome { height: 32px; background: #e8ecf1; display: flex; align-items: center; padding: 0 14px; gap: 8px; flex-shrink: 0; border-bottom: 1px solid #d7dde5; }
+  .dark .chrome { background: #17212f; border-bottom-color: #253244; }
+  .dot { width: 11px; height: 11px; border-radius: 6px; }
+  .chrome-title { flex: 1; text-align: center; font-size: 12px; color: #6b7684; }
+  .dark .chrome-title { color: #9aa8bc; }
+
+  /* Tweaks panel */
+  #tweaks { position: fixed; bottom: 20px; right: 20px; background: #fff; border: 1px solid #e2e6ec; border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.12); padding: 16px; width: 260px; z-index: 100; display: none;
+    font-family: Inter, system-ui, sans-serif; font-size: 13px; color: #1c2633; }
+  #tweaks.open { display: block; }
+  #tweaks h3 { margin: 0 0 12px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .tw-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .tw-label { font-size: 11px; color: #6b7684; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 500; }
+  .tw-seg { display: flex; gap: 2px; background: #eff2f6; padding: 2px; border-radius: 6px; }
+  .tw-seg button { flex: 1; border: none; background: transparent; padding: 6px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; color: #1c2633; font-family: inherit; }
+  .tw-seg button.on { background: #fff; font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+  .tw-swatches { display: flex; gap: 6px; }
+  .tw-swatch { width: 26px; height: 26px; border-radius: 6px; cursor: pointer; border: 2px solid transparent; }
+  .tw-swatch.on { border-color: #1c2633; }
+  .tw-toggle { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; cursor: pointer; }
+  .tw-switch { width: 32px; height: 18px; background: #d4dae3; border-radius: 9px; position: relative; transition: 0.15s; }
+  .tw-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #fff; border-radius: 7px; transition: 0.15s; }
+  .tw-switch.on { background: #0B3D6B; }
+  .tw-switch.on::after { left: 16px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="frame">
+    <div class="chrome">
+      <div class="dot" style="background:#ed6a5e"></div>
+      <div class="dot" style="background:#f5bf4f"></div>
+      <div class="dot" style="background:#62c554"></div>
+      <div class="chrome-title">Gestión de Oficios CGE</div>
+    </div>
+    <div id="root" style="flex:1; overflow:hidden;"></div>
+  </div>
+</div>
+
+<div id="tweaks"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="v5-deep/v5-app.jsx"></script>
+
+<script type="text/babel">
+const DEFAULT_TWEAKS = /*EDITMODE-BEGIN*/{
+  "dark": false,
+  "density": "compact",
+  "accent": "graphite"
+}/*EDITMODE-END*/;
+
+const ACCENTS = {
+  'cge-blue':   { accent: '#0B3D6B', blue: '#1E6FB8', swatch: '#0B3D6B' },
+  'deep-navy':  { accent: '#1a2847', blue: '#2d5a9b', swatch: '#1a2847' },
+  'electric':   { accent: '#0057b7', blue: '#2a89e6', swatch: '#0057b7' },
+  'graphite':   { accent: '#2a3441', blue: '#4a5a70', swatch: '#2a3441' },
+};
+
+function Root() {
+  const [tweaks, setTweaks] = React.useState(DEFAULT_TWEAKS);
+  const [editMode, setEditMode] = React.useState(false);
+
+  // Apply accent override
+  const palettedApp = React.useMemo(() => {
+    const a = ACCENTS[tweaks.accent] || ACCENTS['cge-blue'];
+    return { ...tweaks, _accent: a };
+  }, [tweaks]);
+
+  React.useEffect(() => {
+    const frame = document.getElementById('frame');
+    if (tweaks.dark) frame.classList.add('dark'); else frame.classList.remove('dark');
+  }, [tweaks.dark]);
+
+  // Edit mode protocol
+  React.useEffect(() => {
+    const onMsg = (e) => {
+      if (!e.data || typeof e.data !== 'object') return;
+      if (e.data.type === '__activate_edit_mode') setEditMode(true);
+      if (e.data.type === '__deactivate_edit_mode') setEditMode(false);
+    };
+    window.addEventListener('message', onMsg);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  React.useEffect(() => {
+    const panel = document.getElementById('tweaks');
+    if (editMode) panel.classList.add('open'); else panel.classList.remove('open');
+  }, [editMode]);
+
+  const setTweak = (k, v) => {
+    const next = { ...tweaks, [k]: v };
+    setTweaks(next);
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits: { [k]: v } }, '*');
+  };
+
+  // Render tweaks panel imperatively
+  React.useEffect(() => {
+    const panel = document.getElementById('tweaks');
+    panel.innerHTML = '';
+    panel.insertAdjacentHTML('beforeend', `
+      <h3><span style="color:#c96442">✦</span> Tweaks</h3>
+      <div class="tw-row">
+        <div class="tw-label">Tema</div>
+        <div class="tw-seg" data-k="dark">
+          <button data-v="false" class="${!tweaks.dark ? 'on' : ''}">Claro</button>
+          <button data-v="true" class="${tweaks.dark ? 'on' : ''}">Oscuro</button>
+        </div>
+      </div>
+      <div class="tw-row">
+        <div class="tw-label">Densidad</div>
+        <div class="tw-seg" data-k="density">
+          <button data-v="compact" class="${tweaks.density === 'compact' ? 'on' : ''}">Compacta</button>
+          <button data-v="normal" class="${tweaks.density === 'normal' ? 'on' : ''}">Normal</button>
+        </div>
+      </div>
+      <div class="tw-row">
+        <div class="tw-label">Color acento</div>
+        <div class="tw-swatches">
+          ${Object.entries(ACCENTS).map(([k, a]) => `<div class="tw-swatch ${tweaks.accent === k ? 'on' : ''}" data-k="accent" data-v="${k}" style="background:${a.swatch}"></div>`).join('')}
+        </div>
+      </div>
+      <div style="font-size:11px; color:#6b7684; padding-top:8px; border-top:1px solid #e2e6ec;">
+        Los cambios se guardan automáticamente.
+      </div>
+    `);
+    panel.querySelectorAll('.tw-seg button').forEach(b => {
+      b.onclick = () => {
+        const k = b.parentElement.dataset.k;
+        let v = b.dataset.v;
+        if (v === 'true') v = true; else if (v === 'false') v = false;
+        setTweak(k, v);
+      };
+    });
+    panel.querySelectorAll('.tw-swatch').forEach(b => {
+      b.onclick = () => setTweak(b.dataset.k, b.dataset.v);
+    });
+  }, [tweaks, editMode]);
+
+  return <V5App tweaks={palettedApp} />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
+</script>
+</body>
+</html>
