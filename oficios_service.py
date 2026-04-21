@@ -1987,6 +1987,15 @@ class _OficioCard:
         # Buttons via grid so MULTA toggle keeps order stable
         btn_wrap = tk.Frame(footer, bg=pbg)
         btn_wrap.pack(side="right")
+
+        self.btn_abrir = ctk.CTkButton(
+            btn_wrap, text="Abrir",
+            fg_color=pal["accent"], hover_color=pal["blue"],
+            text_color="#ffffff", border_width=0,
+            font=_font(11), height=26, width=60, corner_radius=6,
+        )
+        self.btn_abrir.grid(row=0, column=0)
+
         self.btn_revaluar = ctk.CTkButton(
             btn_wrap, text="Revaluar",
             fg_color="transparent", hover_color=pal["soft"],
@@ -1994,7 +2003,7 @@ class _OficioCard:
             border_color=pal["border"],
             font=_font(11), height=26, width=74, corner_radius=6,
         )
-        self.btn_revaluar.grid(row=0, column=0)
+        self.btn_revaluar.grid(row=0, column=1, padx=(6, 0))
 
         self.btn_informe = ctk.CTkButton(
             btn_wrap, text="Informe",
@@ -2003,7 +2012,7 @@ class _OficioCard:
             border_color=pal["border"],
             font=_font(11), height=26, width=70, corner_radius=6,
         )
-        self.btn_informe.grid(row=0, column=1, padx=(6, 0))
+        self.btn_informe.grid(row=0, column=2, padx=(6, 0))
         self.btn_informe.grid_remove()
         self._informe_shown = False
 
@@ -2052,6 +2061,7 @@ class _OficioCard:
             self.lbl_plazo.pack_forget()
             self._plazo_packed = False
 
+        self.btn_abrir.configure(command=lambda nro=o["nro"]: app._open_oficio(nro))
         self.btn_revaluar.configure(command=lambda oficio=o: app._go("revaluar", oficio))
         if o["multa"]:
             self.btn_informe.configure(command=lambda oficio=o: app._go("multa", oficio))
@@ -2171,6 +2181,16 @@ class OficiosApp(ctk.CTk):
             command=self._on_run,
         )
         self._btn_run.pack(side="right", padx=(10, 0))
+
+        # Reset + re-analyze button
+        ctk.CTkButton(
+            right, text="⟳  Desde cero",
+            fg_color="transparent", hover_color=pal["soft"],
+            text_color=pal["text"], border_width=1,
+            border_color=pal["border"],
+            font=_font(12), height=32, corner_radius=6,
+            command=self._on_reset_and_run,
+        ).pack(side="right", padx=(6, 0))
 
         # Tab nav (segmented control)
         nav_bg = ctk.CTkFrame(right, fg_color=pal["soft"], corner_radius=8)
@@ -2346,6 +2366,30 @@ class OficiosApp(ctk.CTk):
         self._btn_run.configure(state="normal", text="▶  Ejecutar análisis")
         self._set_status(f"✗ Error: {exc}")
         messagebox.showerror("Error al procesar", str(exc))
+
+    def _on_reset_and_run(self) -> None:
+        if not messagebox.askyesno(
+            "Confirmar reset",
+            "Esto borrará la memoria de PDFs procesados y re-analizará todo desde cero.\n\n¿Continuar?",
+        ):
+            return
+        reset_state(self.config)
+        self._set_status("🔄 Memoria reseteada — re-analizando…")
+        self._on_run()
+
+    def _open_oficio(self, nro: str) -> None:
+        pdf_path = find_related_pdf(self.config.watch_dir, nro)
+        if pdf_path is None:
+            self._set_status(f"✗ No se encontró PDF para oficio {nro}")
+            return
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(pdf_path)
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", str(pdf_path)])
+        except Exception as exc:
+            self._set_status(f"✗ Error abriendo PDF: {exc}")
 
     # ── Bandeja ───────────────────────────────────────────────────────────
 
