@@ -2191,7 +2191,7 @@ class OficiosApp(ctk.CTk):
                          if o["diasRest"] is not None and 0 <= o["diasRest"] <= 5]
         if criticos_list:
             alert = ctk.CTkFrame(inner, fg_color=pal["warnSoft"],
-                                  border_width=1, border_color=pal["warn"] + "33",
+                                  border_width=1, border_color=pal["border"],
                                   corner_radius=10)
             alert.pack(fill="x", pady=(0, 14))
             alert_inner = ctk.CTkFrame(alert, fg_color="transparent")
