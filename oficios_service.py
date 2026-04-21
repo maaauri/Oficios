@@ -20,6 +20,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 try:
+    import customtkinter as ctk
+    CTK_AVAILABLE = True
+except ImportError:
+    CTK_AVAILABLE = False
+
+try:
     from docx import Document as DocxDocument
     from docx.shared import Pt, Inches, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -1599,19 +1605,44 @@ def update_excel_row(excel_path: Path, nro: str, categoria: str,
 
 
 # ---------------------------------------------------------------------------
-# Design system (paleta y helpers de UI)
+# V5 Design Tokens
 # ---------------------------------------------------------------------------
 
-UI = {
-    # Colores principales
-    "primary":       "#1F4E78",
-    "primary_dark":  "#163A5A",
-    "primary_light": "#2E6BA1",
-    "accent":        "#C55A11",
-    "success":       "#2E7D4F",
-    "warning":       "#B7791F",
-    "danger":        "#922B21",
-    "info":          "#5B2C6F",
+PAL_LIGHT = {
+    "bg": "#f7f8fa", "panel": "#ffffff", "soft": "#eff2f6", "softer": "#f4f6f9",
+    "border": "#e2e6ec", "borderStrong": "#d4dae3",
+    "text": "#1c2633", "subtext": "#6b7684", "dim": "#9aa3b0",
+    "accent": "#0B3D6B", "blue": "#1E6FB8", "blueSoft": "#e8f0fa",
+    "success": "#1a7f5a", "successSoft": "#e4f3ec",
+    "warn": "#c47a00", "warnSoft": "#fdf2e0",
+    "danger": "#b42d2d", "dangerSoft": "#fbe7e7",
+    "lilac": "#8a4fb5", "lilacSoft": "#f2ebf8",
+    "teal": "#0e8a82", "tealSoft": "#dff2f0",
+    "neutral": "#556270", "neutralSoft": "#eaedf1",
+}
+
+PAL_DARK = {
+    "bg": "#0f1722", "panel": "#17212f", "soft": "#1c2838", "softer": "#1a2433",
+    "border": "#253244", "borderStrong": "#2d3d52",
+    "text": "#e4eaf2", "subtext": "#9aa8bc", "dim": "#6b7a8f",
+    "accent": "#3d8bd9", "blue": "#5aa9e6", "blueSoft": "#1c3550",
+    "success": "#4db87d", "successSoft": "#1a3a2a",
+    "warn": "#e0a54a", "warnSoft": "#3d2e15",
+    "danger": "#e06464", "dangerSoft": "#3d1e1e",
+    "lilac": "#a88be8", "lilacSoft": "#2d2540",
+    "teal": "#4ec9b0", "tealSoft": "#1a3530",
+    "neutral": "#8798b0", "neutralSoft": "#1f2a3a",
+}
+
+AREA_COLOR_MAP = {
+    "Conexiones": "blue", "PMGD": "warn",
+    "Servicio al Cliente": "success", "Pérdidas": "lilac",
+    "Sin área": "neutral", "Cobranza": "danger", "Lectura": "teal",
+}
+
+FONT_UI = "Segoe UI"
+FONT_MONO = "Consolas"
+    # OLD UI DICT — MARKER FOR DELETION
     # Fondos
     "bg":            "#F4F6FA",
     "surface":       "#FFFFFF",
