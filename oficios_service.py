@@ -1916,7 +1916,7 @@ def _card(parent, pal: Dict, **kw) -> "ctk.CTkFrame":
         fg_color=pal["panel"],
         border_width=1,
         border_color=pal["border"],
-        corner_radius=8,
+        corner_radius=10,
         **kw,
     )
 
@@ -1924,6 +1924,150 @@ def _card(parent, pal: Dict, **kw) -> "ctk.CTkFrame":
 def _tframe(parent, bg: str, **kw) -> tk.Frame:
     """Lightweight transparent-equivalent frame using native tkinter."""
     return tk.Frame(parent, bg=bg, **kw)
+
+
+class _OficioCard:
+    """Reusable card widget. Build once, update via .update(o); pool-friendly."""
+
+    def __init__(self, app: "OficiosApp", parent) -> None:
+        self.app = app
+        pal = app.pal
+        pbg = pal["panel"]
+
+        self.frame = _card(parent, pal)
+        self.frame.columnconfigure(0, weight=1)
+
+        # ── Top row: nro · tipo · chips ─────────────────────
+        top = tk.Frame(self.frame, bg=pbg)
+        top.pack(fill="x", padx=16, pady=(14, 0))
+
+        self.lbl_nro = tk.Label(top, fg=pal["text"], bg=pbg,
+                                font=_mono(12, "bold"))
+        self.lbl_nro.pack(side="left")
+        self.lbl_tipo = tk.Label(top, fg=pal["subtext"], bg=pbg, font=_font(11))
+        self.lbl_tipo.pack(side="left", padx=(4, 0))
+
+        self.chip_dias = ctk.CTkLabel(
+            top, text="", font=_font(10, "bold"),
+            corner_radius=4, padx=8, pady=2,
+        )
+        self.chip_dias.pack(side="right")
+
+        self.chip_multa = ctk.CTkLabel(
+            top, text="MULTA", text_color=pal["warn"],
+            fg_color=pal["warnSoft"], font=_font(10, "bold"),
+            corner_radius=4, padx=8, pady=2,
+        )
+        self._multa_shown = False
+
+        # ── Asunto ──────────────────────────────────────────
+        self.lbl_asunto = tk.Label(
+            self.frame, fg=pal["text"], bg=pbg, font=_font(13),
+            anchor="w", justify="left", wraplength=480,
+        )
+        self.lbl_asunto.pack(fill="x", padx=16, pady=(8, 0))
+
+        # ── Separator ───────────────────────────────────────
+        tk.Frame(self.frame, bg=pal["border"], height=1).pack(
+            fill="x", padx=16, pady=(10, 0))
+
+        # ── Footer ──────────────────────────────────────────
+        footer = tk.Frame(self.frame, bg=pbg)
+        footer.pack(fill="x", padx=16, pady=(8, 14))
+
+        self.dot_area = tk.Canvas(footer, width=10, height=10,
+                                  highlightthickness=0, bd=0)
+        self.dot_area.pack(side="left", pady=4)
+        self.lbl_area = tk.Label(footer, fg=pal["text"], bg=pbg, font=_font(11))
+        self.lbl_area.pack(side="left", padx=(6, 0))
+        self.lbl_plazo = tk.Label(footer, fg=pal["subtext"], bg=pbg, font=_font(11))
+        self.lbl_plazo.pack(side="left", padx=(4, 0))
+        self._plazo_packed = True
+
+        # Buttons via grid so MULTA toggle keeps order stable
+        btn_wrap = tk.Frame(footer, bg=pbg)
+        btn_wrap.pack(side="right")
+        self.btn_revaluar = ctk.CTkButton(
+            btn_wrap, text="Revaluar",
+            fg_color="transparent", hover_color=pal["soft"],
+            text_color=pal["text"], border_width=1,
+            border_color=pal["border"],
+            font=_font(11), height=26, width=74, corner_radius=6,
+        )
+        self.btn_revaluar.grid(row=0, column=0)
+
+        self.btn_informe = ctk.CTkButton(
+            btn_wrap, text="Informe",
+            fg_color="transparent", hover_color=pal["soft"],
+            text_color=pal["text"], border_width=1,
+            border_color=pal["border"],
+            font=_font(11), height=26, width=70, corner_radius=6,
+        )
+        self.btn_informe.grid(row=0, column=1, padx=(6, 0))
+        self.btn_informe.grid_remove()
+        self._informe_shown = False
+
+    def update(self, o: Dict[str, Any]) -> None:
+        app = self.app
+        pal = app.pal
+        dias = o["diasRest"]
+        if dias is None:
+            tc = pal["subtext"]; bg_chip = pal["soft"]
+        elif dias <= 3:
+            tc = pal["danger"]; bg_chip = pal["dangerSoft"]
+        elif dias <= 5:
+            tc = pal["warn"]; bg_chip = pal["warnSoft"]
+        else:
+            tc = pal["success"]; bg_chip = pal["successSoft"]
+
+        area_color = pal[AREA_COLOR_MAP.get(o["area"], "blue")]
+
+        self.lbl_nro.config(text=o["nro"])
+        self.lbl_tipo.config(text=f"· {o['tipo']}")
+        self.chip_dias.configure(
+            text=f"{dias}d" if dias is not None else "—",
+            text_color=tc, fg_color=bg_chip,
+        )
+
+        if o["multa"]:
+            if not self._multa_shown:
+                self.chip_multa.pack(side="right", padx=(0, 6))
+                self._multa_shown = True
+        elif self._multa_shown:
+            self.chip_multa.pack_forget()
+            self._multa_shown = False
+
+        asunto = o["asunto"][:130] + ("…" if len(o["asunto"]) > 130 else "")
+        self.lbl_asunto.config(text=asunto)
+
+        self.dot_area.config(bg=area_color)
+        self.lbl_area.config(text=o["area"])
+
+        if o["plazo"]:
+            self.lbl_plazo.config(text=f"· {o['plazo']}")
+            if not self._plazo_packed:
+                self.lbl_plazo.pack(side="left", padx=(4, 0))
+                self._plazo_packed = True
+        elif self._plazo_packed:
+            self.lbl_plazo.pack_forget()
+            self._plazo_packed = False
+
+        self.btn_revaluar.configure(command=lambda oficio=o: app._go("revaluar", oficio))
+        if o["multa"]:
+            self.btn_informe.configure(command=lambda oficio=o: app._go("multa", oficio))
+            if not self._informe_shown:
+                self.btn_informe.grid()
+                self._informe_shown = True
+        elif self._informe_shown:
+            self.btn_informe.grid_remove()
+            self._informe_shown = False
+
+    def show(self, row: int, col: int, pad_left: int) -> None:
+        self.frame.grid(row=row, column=col, sticky="nsew",
+                        padx=(pad_left, 0), pady=(0, 12))
+
+    def hide(self) -> None:
+        self.frame.grid_forget()
 
 
 class OficiosApp(ctk.CTk):
@@ -1942,9 +2086,14 @@ class OficiosApp(ctk.CTk):
         self._cached_kpis: Optional[Dict[str, Any]] = None
         self._search_after_id: Optional[str] = None
         self._MAX_CARDS = 20
+        self._card_pool: List[_OficioCard] = []
+        self._empty_widget: Optional[tk.Frame] = None
+        self._more_widget: Optional[tk.Label] = None
 
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
+        ctk.set_widget_scaling(1.0)
+        ctk.set_window_scaling(1.0)
 
         self.title("Gestión de Oficios CGE")
         self.geometry("1240x820")
@@ -1981,7 +2130,7 @@ class OficiosApp(ctk.CTk):
     def _build_header(self) -> tk.Frame:
         pal = self.pal
         bg = pal["panel"]
-        hdr = tk.Frame(self, bg=bg, height=62)
+        hdr = tk.Frame(self, bg=bg, height=72)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
 
@@ -2284,6 +2433,25 @@ class OficiosApp(ctk.CTk):
         self._cards_container.columnconfigure(0, weight=1, uniform="card")
         self._cards_container.columnconfigure(1, weight=1, uniform="card")
 
+        # Pre-build the pool of reusable cards (hidden). Since
+        # _cards_container is rebuilt each _show_bandeja, the pool too.
+        self._card_pool = [
+            _OficioCard(self, self._cards_container)
+            for _ in range(self._MAX_CARDS)
+        ]
+
+        self._empty_widget = tk.Frame(
+            self._cards_container, bg=bg,
+            highlightbackground=pal["border"], highlightthickness=1,
+        )
+        tk.Label(self._empty_widget, text="Sin oficios para este filtro.",
+                 fg=pal["subtext"], bg=bg, font=_font(13)).pack(pady=40)
+
+        self._more_widget = tk.Label(
+            self._cards_container, text="",
+            fg=pal["subtext"], bg=bg, font=_font(12),
+        )
+
         self._all_oficios = oficios
         self._refresh_cards()
 
@@ -2342,10 +2510,9 @@ class OficiosApp(ctk.CTk):
 
     def _refresh_cards(self) -> None:
         self._search_after_id = None
-        for w in self._cards_container.winfo_children():
-            w.destroy()
+        if not self._card_pool:
+            return
 
-        pal = self.pal
         tab = self._bandeja_tab.get()
         q = self._bandeja_q.get().lower()
         oficios = self._all_oficios
@@ -2361,104 +2528,37 @@ class OficiosApp(ctk.CTk):
                        if q in (o["nro"] + o["asunto"] + o["area"]).lower()]
 
         total_filtered = len(oficios)
-        oficios = oficios[:self._MAX_CARDS]
+        visible = oficios[:self._MAX_CARDS]
 
-        bg = pal["bg"]
-        if not oficios:
-            empty = tk.Frame(self._cards_container, bg=bg,
-                             highlightbackground=pal["border"], highlightthickness=1)
-            empty.grid(row=0, column=0, columnspan=2, sticky="nsew")
-            tk.Label(empty, text="Sin oficios para este filtro.",
-                     fg=pal["subtext"], bg=bg, font=_font(13)).pack(pady=40)
-            return
+        # Empty state
+        if self._empty_widget is not None:
+            if not visible:
+                self._empty_widget.grid(row=0, column=0, columnspan=2, sticky="nsew")
+            else:
+                self._empty_widget.grid_forget()
 
-        for idx, oficio in enumerate(oficios):
-            row_idx = idx // 2
-            col_idx = idx % 2
-            pad_left = 0 if col_idx == 0 else 6
-            self._oficio_card(self._cards_container, oficio,
-                              row_idx, col_idx, pad_left)
+        # Update / show / hide pool cards
+        for idx, card in enumerate(self._card_pool):
+            if idx < len(visible):
+                card.update(visible[idx])
+                row_idx = idx // 2
+                col_idx = idx % 2
+                card.show(row_idx, col_idx, 0 if col_idx == 0 else 6)
+            else:
+                card.hide()
 
-        if total_filtered > self._MAX_CARDS:
-            more = total_filtered - self._MAX_CARDS
-            tk.Label(
-                self._cards_container,
-                text=f"… y {more} oficio{'s' if more > 1 else ''} más — usa la búsqueda para refinar.",
-                fg=pal["subtext"], bg=bg, font=_font(12),
-            ).grid(row=(len(oficios) // 2) + 1, column=0, columnspan=2, pady=(8, 0))
-
-    def _oficio_card(self, parent, o: Dict[str, Any],
-                     row: int, col: int, pad_left: int) -> None:
-        pal = self.pal
-        pbg = pal["panel"]
-        dias = o["diasRest"]
-        if dias is None:
-            tc = pal["subtext"]; bg_chip = pal["soft"]
-        elif dias <= 3:
-            tc = pal["danger"]; bg_chip = pal["dangerSoft"]
-        elif dias <= 5:
-            tc = pal["warn"]; bg_chip = pal["warnSoft"]
-        else:
-            tc = pal["success"]; bg_chip = pal["successSoft"]
-
-        area_key = AREA_COLOR_MAP.get(o["area"], "blue")
-        area_color = pal[area_key]
-
-        card = _card(parent, pal)
-        card.grid(row=row, column=col, sticky="nsew",
-                  padx=(pad_left, 0), pady=(0, 12))
-        card.columnconfigure(0, weight=1)
-
-        top = tk.Frame(card, bg=pbg)
-        top.pack(fill="x", padx=16, pady=(14, 0))
-
-        tk.Label(top, text=o["nro"], fg=pal["text"], bg=pbg,
-                 font=_mono(12, "bold")).pack(side="left")
-        tk.Label(top, text=f"· {o['tipo']}", fg=pal["subtext"], bg=pbg,
-                 font=_font(11)).pack(side="left", padx=(4, 0))
-
-        dias_txt = f"{dias}d" if dias is not None else "—"
-        tk.Label(top, text=dias_txt, fg=tc, bg=bg_chip,
-                 font=_font(10, "bold"), padx=6, pady=1).pack(side="right")
-
-        if o["multa"]:
-            tk.Label(top, text="MULTA", fg=pal["warn"], bg=pal["warnSoft"],
-                     font=_font(10, "bold"), padx=6, pady=1).pack(side="right", padx=(0, 6))
-
-        asunto = o["asunto"][:130] + ("…" if len(o["asunto"]) > 130 else "")
-        tk.Label(card, text=asunto, fg=pal["text"], bg=pbg,
-                 font=_font(13), anchor="w", justify="left",
-                 wraplength=480).pack(fill="x", padx=16, pady=(8, 0))
-
-        tk.Frame(card, bg=pal["border"], height=1).pack(fill="x", padx=16, pady=(10, 0))
-
-        footer = tk.Frame(card, bg=pbg)
-        footer.pack(fill="x", padx=16, pady=(8, 14))
-
-        tk.Canvas(footer, bg=area_color, width=8, height=8,
-                  highlightthickness=0).pack(side="left", pady=4)
-        tk.Label(footer, text=o["area"], fg=pal["text"], bg=pbg,
-                 font=_font(11)).pack(side="left", padx=(6, 0))
-        if o["plazo"]:
-            tk.Label(footer, text=f"· {o['plazo']}", fg=pal["subtext"], bg=pbg,
-                     font=_font(11)).pack(side="left", padx=(4, 0))
-
-        if o["multa"]:
-            btn_i = tk.Button(
-                footer, text="Informe", fg=pal["text"], bg=pbg,
-                activebackground=pal["soft"], font=_font(11),
-                bd=1, relief="solid", padx=8, pady=2, cursor="hand2",
-                command=lambda oficio=o: self._go("multa", oficio),
-            )
-            btn_i.pack(side="right", padx=(6, 0))
-
-        tk.Button(
-            footer, text="Revaluar", fg=pal["text"], bg=pbg,
-            activebackground=pal["soft"], font=_font(11),
-            bd=1, relief="solid", padx=8, pady=2, cursor="hand2",
-            command=lambda oficio=o: self._go("revaluar", oficio),
-        ).pack(side="right")
-
+        # "more" label
+        if self._more_widget is not None:
+            if total_filtered > self._MAX_CARDS:
+                more = total_filtered - self._MAX_CARDS
+                self._more_widget.config(
+                    text=f"… y {more} oficio{'s' if more > 1 else ''} más — usa la búsqueda para refinar.",
+                )
+                self._more_widget.grid(
+                    row=(len(visible) // 2) + 1, column=0, columnspan=2, pady=(8, 0),
+                )
+            else:
+                self._more_widget.grid_forget()
 
 # ---------------------------------------------------------------------------
 # CLI entry point
