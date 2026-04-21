@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 try:
@@ -2089,6 +2089,9 @@ class OficiosApp(ctk.CTk):
         self._card_pool: List[_OficioCard] = []
         self._empty_widget: Optional[tk.Frame] = None
         self._more_widget: Optional[tk.Label] = None
+        self._batch_after_id: Optional[str] = None
+        self._pending_render: Optional[Tuple] = None
+        self._render_generation: int = 0
 
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
@@ -2232,9 +2235,29 @@ class OficiosApp(ctk.CTk):
     # ── Data caching ─────────────────────────────────────────────────────
 
     def _reload_data(self) -> None:
+        """Sync load — used at startup when we must have data before render."""
         kpis = get_bandeja_kpis(self.config)
         self._cached_kpis = kpis
         self._cached_oficios = kpis["oficios"]
+
+    def _reload_data_async(self, on_done: Optional[Callable[[], None]] = None) -> None:
+        """Load Excel data in a background thread. Calls on_done on the UI
+        thread when finished (or on error, with status updated)."""
+        def _worker() -> None:
+            try:
+                kpis = get_bandeja_kpis(self.config)
+                self.after(0, lambda: self._apply_reloaded(kpis, on_done))
+            except Exception as exc:
+                logging.exception("Error cargando datos: %s", exc)
+                self.after(0, lambda e=exc: self._set_status(f"✗ Error al cargar: {e}"))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_reloaded(self, kpis: Dict[str, Any],
+                        on_done: Optional[Callable[[], None]]) -> None:
+        self._cached_kpis = kpis
+        self._cached_oficios = kpis["oficios"]
+        if on_done is not None:
+            on_done()
 
     # ── Screen switching ──────────────────────────────────────────────────
 
@@ -2244,6 +2267,15 @@ class OficiosApp(ctk.CTk):
             self._selected_oficio = payload
         elif screen == "multa":
             self._selected_oficio = payload
+        # Cancel any in-flight progressive render before tearing down
+        if self._batch_after_id is not None:
+            self.after_cancel(self._batch_after_id)
+            self._batch_after_id = None
+        self._pending_render = None
+        self._render_generation += 1
+        self._card_pool = []
+        self._empty_widget = None
+        self._more_widget = None
         self._update_tab_styles()
         for w in self._content_frame.winfo_children():
             w.destroy()
@@ -2301,9 +2333,12 @@ class OficiosApp(ctk.CTk):
         msg = (f"✓ Completado: {stats.total} PDF(s) procesado(s)"
                if stats.total else "● Sin PDFs nuevos")
         self._set_status(msg)
-        self._reload_data()
-        if self._screen == "inicio":
-            self._go("inicio")
+
+        def _after_reload() -> None:
+            if self._screen == "inicio":
+                self._go("inicio")
+
+        self._reload_data_async(on_done=_after_reload)
         for pdf_path, extracted in multa_pdfs:
             ask_and_generate_informe(self.config, pdf_path, extracted)
 
@@ -2513,6 +2548,12 @@ class OficiosApp(ctk.CTk):
         if not self._card_pool:
             return
 
+        # Cancel any in-flight progressive render
+        if self._batch_after_id is not None:
+            self.after_cancel(self._batch_after_id)
+            self._batch_after_id = None
+        self._render_generation += 1
+
         tab = self._bandeja_tab.get()
         q = self._bandeja_q.get().lower()
         oficios = self._all_oficios
@@ -2530,35 +2571,75 @@ class OficiosApp(ctk.CTk):
         total_filtered = len(oficios)
         visible = oficios[:self._MAX_CARDS]
 
-        # Empty state
+        # Empty state + hide all extras up-front (cheap)
         if self._empty_widget is not None:
             if not visible:
                 self._empty_widget.grid(row=0, column=0, columnspan=2, sticky="nsew")
             else:
                 self._empty_widget.grid_forget()
-
-        # Update / show / hide pool cards
-        for idx, card in enumerate(self._card_pool):
-            if idx < len(visible):
-                card.update(visible[idx])
-                row_idx = idx // 2
-                col_idx = idx % 2
-                card.show(row_idx, col_idx, 0 if col_idx == 0 else 6)
-            else:
-                card.hide()
-
-        # "more" label
-        if self._more_widget is not None:
-            if total_filtered > self._MAX_CARDS:
-                more = total_filtered - self._MAX_CARDS
-                self._more_widget.config(
-                    text=f"… y {more} oficio{'s' if more > 1 else ''} más — usa la búsqueda para refinar.",
-                )
-                self._more_widget.grid(
-                    row=(len(visible) // 2) + 1, column=0, columnspan=2, pady=(8, 0),
-                )
-            else:
+        for idx in range(len(visible), len(self._card_pool)):
+            self._card_pool[idx].hide()
+        if not visible:
+            if self._more_widget is not None:
                 self._more_widget.grid_forget()
+            return
+
+        # Render first batch synchronously (above-the-fold)
+        FIRST_BATCH = 6
+        first_n = min(FIRST_BATCH, len(visible))
+        for idx in range(first_n):
+            self._render_card_at(idx, visible[idx])
+
+        if first_n >= len(visible):
+            self._finalize_render(total_filtered, len(visible))
+            return
+
+        # Defer remaining cards to background batches
+        self._pending_render = (visible, total_filtered, first_n,
+                                self._render_generation)
+        self._batch_after_id = self.after(1, self._render_next_batch)
+
+    def _render_card_at(self, idx: int, oficio: Dict[str, Any]) -> None:
+        card = self._card_pool[idx]
+        card.update(oficio)
+        col = idx % 2
+        card.show(idx // 2, col, 0 if col == 0 else 6)
+
+    def _render_next_batch(self) -> None:
+        if self._pending_render is None:
+            return
+        visible, total_filtered, start, gen = self._pending_render
+        if gen != self._render_generation or not self._card_pool:
+            self._pending_render = None
+            self._batch_after_id = None
+            return
+
+        BATCH = 4
+        end = min(start + BATCH, len(visible))
+        for idx in range(start, end):
+            self._render_card_at(idx, visible[idx])
+
+        if end >= len(visible):
+            self._finalize_render(total_filtered, len(visible))
+            self._pending_render = None
+            self._batch_after_id = None
+        else:
+            self._pending_render = (visible, total_filtered, end, gen)
+            self._batch_after_id = self.after(1, self._render_next_batch)
+
+    def _finalize_render(self, total_filtered: int, visible_count: int) -> None:
+        if self._more_widget is None:
+            return
+        if total_filtered > self._MAX_CARDS:
+            more = total_filtered - self._MAX_CARDS
+            self._more_widget.config(
+                text=f"… y {more} oficio{'s' if more > 1 else ''} más — usa la búsqueda para refinar.",
+            )
+            self._more_widget.grid(
+                row=(visible_count // 2) + 1, column=0, columnspan=2, pady=(8, 0),
+            )
+        else:
+            self._more_widget.grid_forget()
 
 # ---------------------------------------------------------------------------
 # CLI entry point
