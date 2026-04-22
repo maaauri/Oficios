@@ -1887,6 +1887,125 @@ def get_bandeja_kpis(config: Config) -> Dict[str, Any]:
     }
 
 
+def get_stats_data(config: Config) -> Dict[str, Any]:
+    """Compute all data needed for the Estadísticas screen."""
+    # ── Per-area breakdown from SQLite ─────────────────────────────────
+    area_counts: Dict[str, int] = {}
+    tipo_counts: Dict[str, int] = {}
+    monthly: Dict[str, Dict[str, int]] = {}  # "YYYY-MM" → {n, multas}
+    total = 0
+    total_multas = 0
+
+    if config.db_path.exists():
+        con = sqlite3.connect(config.db_path)
+        try:
+            for gerencia, cnt in con.execute(
+                "SELECT gerencia, COUNT(*) FROM oficios GROUP BY gerencia"
+            ):
+                area_counts[gerencia or "Sin área"] = cnt
+                total += cnt
+
+            for cat, cnt in con.execute(
+                "SELECT categoria, COUNT(*) FROM oficios GROUP BY categoria"
+            ):
+                tipo_counts[cat or "Sin categoría"] = cnt
+
+            corrections = load_corrections(config.corrections_path)
+            for nro, concepto, fecha_iso in con.execute(
+                "SELECT nro, concepto, fecha_oficio FROM oficios"
+            ):
+                if is_multa(nro or "", concepto or "", corrections):
+                    total_multas += 1
+                    is_m = 1
+                else:
+                    is_m = 0
+                if fecha_iso:
+                    ym = fecha_iso[:7]  # "YYYY-MM"
+                else:
+                    ym = "Sin fecha"
+                bucket = monthly.setdefault(ym, {"n": 0, "multas": 0})
+                bucket["n"] += 1
+                bucket["multas"] += is_m
+        finally:
+            con.close()
+
+    # ── Learning stats from historial ──────────────────────────────────
+    historial = load_historial(config.historial_path)
+    lstats = compute_learning_stats(historial)
+    acc_str = f"{lstats['accuracy']*100:.0f}%" if lstats["total"] else "—"
+    correcciones_total = lstats["total"] - lstats["correctos"]
+
+    # ── Format areas for display (sorted descending) ───────────────────
+    areas_display = []
+    for name, cnt in sorted(area_counts.items(), key=lambda x: -x[1]):
+        pct = (cnt / total * 100) if total else 0
+        tone = AREA_COLOR_MAP.get(name, "neutral")
+        areas_display.append({"name": name, "count": cnt, "pct": pct, "tone": tone})
+
+    # ── Format tipos ───────────────────────────────────────────────────
+    tipos_display = []
+    for name, cnt in sorted(tipo_counts.items(), key=lambda x: -x[1]):
+        pct = (cnt / total * 100) if total else 0
+        tipos_display.append({"name": name, "count": cnt, "pct": pct})
+
+    # ── Format monthly (last 7 months, sorted) ────────────────────────
+    month_names = {
+        "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
+        "05": "May", "06": "Jun", "07": "Jul", "08": "Ago",
+        "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dic",
+    }
+    monthly_display = []
+    for ym in sorted(monthly.keys())[-7:]:
+        if ym == "Sin fecha":
+            label = "S/F"
+        else:
+            label = month_names.get(ym[5:7], ym[5:7])
+        monthly_display.append({
+            "label": label,
+            "n": monthly[ym]["n"],
+            "multas": monthly[ym]["multas"],
+        })
+
+    # ── Recent activity from historial ─────────────────────────────────
+    actividad = []
+    for h in reversed(historial[-10:]):
+        fecha_str = ""
+        if h.get("fecha_procesado"):
+            try:
+                dt = datetime.fromisoformat(h["fecha_procesado"])
+                delta = datetime.now() - dt
+                if delta.days == 0:
+                    fecha_str = f"hace {delta.seconds // 3600}h" if delta.seconds >= 3600 else f"hace {delta.seconds // 60}min"
+                elif delta.days == 1:
+                    fecha_str = "hace 1 día"
+                else:
+                    fecha_str = f"hace {delta.days} días"
+            except (ValueError, TypeError):
+                pass
+        nro = h.get("numero_oficio", "?")
+        area = h.get("area_final", "")
+        if h.get("fue_corregido"):
+            msg = f"Corregido: {nro} → {area} (era {h.get('area_propuesta', '?')})"
+            tone = "warn"
+        else:
+            msg = f"Clasificado: {nro} → {area}"
+            tone = "success"
+        actividad.append({"msg": msg, "time": fecha_str, "tone": tone})
+
+    return {
+        "total": total,
+        "accuracy": acc_str,
+        "correcciones": correcciones_total,
+        "multas": total_multas,
+        "areas": areas_display,
+        "tipos": tipos_display,
+        "monthly": monthly_display,
+        "por_area": lstats["por_area"],
+        "errores_frecuentes": lstats["errores_frecuentes"],
+        "actividad": actividad[:8],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Processing helpers (thread-safe callbacks)
 # ---------------------------------------------------------------------------
@@ -2466,18 +2585,307 @@ class OficiosApp(ctk.CTk):
         if screen == "inicio":
             self._show_bandeja()
         elif screen == "stats":
-            self._show_stats_placeholder()
+            self._show_stats()
         elif screen == "revaluar":
             self._show_revaluar_placeholder()
         elif screen == "multa":
             self._show_multa_placeholder()
 
-    def _show_stats_placeholder(self) -> None:
-        bg = self.pal["bg"]
-        f = _tframe(self._content_frame, bg)
-        f.pack(fill="both", expand=True, padx=28, pady=28)
-        tk.Label(f, text="Estadísticas — próxima iteración",
-                 fg=self.pal["subtext"], bg=bg, font=_font(14)).pack(expand=True)
+    def _show_stats(self) -> None:
+        pal = self.pal
+        bg = pal["bg"]
+        panel_bg = pal["panel"]
+        data = get_stats_data(self.config)
+
+        scroll = ctk.CTkScrollableFrame(
+            self._content_frame, fg_color=bg, corner_radius=0,
+            scrollbar_button_color=pal["border"],
+            scrollbar_button_hover_color=pal["borderStrong"],
+        )
+        scroll.pack(fill="both", expand=True)
+
+        root = _tframe(scroll, bg)
+        root.pack(fill="both", expand=True, padx=28, pady=(20, 28))
+
+        # ── Title row ─────────────────────────────────────────────────
+        hdr = _tframe(root, bg)
+        hdr.pack(fill="x", pady=(0, 18))
+        tk.Label(hdr, text="Estadísticas", fg=pal["text"], bg=bg,
+                 font=_font(18, "semibold")).pack(side="left")
+        tk.Label(hdr, text=f"Total {data['total']} oficios",
+                 fg=pal["subtext"], bg=bg, font=_font(12)).pack(
+            side="left", padx=(14, 0))
+
+        # ── KPI row ───────────────────────────────────────────────────
+        krow = _tframe(root, bg)
+        krow.pack(fill="x", pady=(0, 16))
+        for i in range(4):
+            krow.columnconfigure(i, weight=1, uniform="skpi")
+
+        n_tipos = len(data["tipos"])
+        kpis = [
+            (str(data["total"]), "Oficios totales", "", pal["text"], "📊"),
+            (data["accuracy"], "Accuracy agente",
+             f"{data['correcciones']} correcciones", pal["success"], "✓"),
+            (str(n_tipos), "Categorías activas", "", pal["text"], "◎"),
+            (str(data["multas"]), "Multas detectadas", "", pal["warn"], "⚠"),
+        ]
+        for i, (v, l, s, c, ic) in enumerate(kpis):
+            self._kpi_card(krow, v, l, s, c, ic, i)
+
+        # ── Row 1: Monthly chart + Tipos ──────────────────────────────
+        r1 = _tframe(root, bg)
+        r1.pack(fill="x", pady=(0, 12))
+        r1.columnconfigure(0, weight=13, uniform="sr1")
+        r1.columnconfigure(1, weight=10, uniform="sr1")
+
+        mp = _card(r1, pal)
+        mp.grid(row=0, column=0, padx=(0, 6), sticky="nsew")
+        tk.Label(mp, text="Volumen mensual", fg=pal["text"], bg=panel_bg,
+                 font=_font(13, "semibold")).pack(anchor="w", padx=16, pady=(14, 0))
+        tk.Label(mp, text="Oficios y multas por mes", fg=pal["subtext"],
+                 bg=panel_bg, font=_font(11)).pack(anchor="w", padx=16, pady=(2, 8))
+        self._draw_monthly_chart(mp, data["monthly"])
+
+        tp = _card(r1, pal)
+        tp.grid(row=0, column=1, padx=(6, 0), sticky="nsew")
+        tk.Label(tp, text="Por tipo de oficio", fg=pal["text"], bg=panel_bg,
+                 font=_font(13, "semibold")).pack(anchor="w", padx=16, pady=(14, 12))
+        self._draw_tipos_list(tp, data["tipos"])
+
+        # ── Row 2: Donut + Agent performance ──────────────────────────
+        r2 = _tframe(root, bg)
+        r2.pack(fill="x")
+        r2.columnconfigure(0, weight=10, uniform="sr2")
+        r2.columnconfigure(1, weight=13, uniform="sr2")
+
+        dp = _card(r2, pal)
+        dp.grid(row=0, column=0, padx=(0, 6), sticky="nsew")
+        tk.Label(dp, text="Distribución por área", fg=pal["text"],
+                 bg=panel_bg, font=_font(13, "semibold")).pack(
+            anchor="w", padx=16, pady=(14, 0))
+        tk.Label(dp, text="Responsables asignados por el agente",
+                 fg=pal["subtext"], bg=panel_bg, font=_font(11)).pack(
+            anchor="w", padx=16, pady=(2, 10))
+        self._draw_donut_panel(dp, data["areas"], data["total"])
+
+        ap = _card(r2, pal)
+        ap.grid(row=0, column=1, padx=(6, 0), sticky="nsew")
+        tk.Label(ap, text="Desempeño del agente", fg=pal["text"],
+                 bg=panel_bg, font=_font(13, "semibold")).pack(
+            anchor="w", padx=16, pady=(14, 0))
+        tk.Label(ap, text="Últimos 30 días", fg=pal["subtext"],
+                 bg=panel_bg, font=_font(11)).pack(
+            anchor="w", padx=16, pady=(2, 10))
+        self._draw_agent_panel(ap, data)
+
+    # ── Stats drawing helpers ─────────────────────────────────────────
+
+    def _draw_monthly_chart(self, parent, monthly) -> None:
+        pal = self.pal
+        panel_bg = pal["panel"]
+        if not monthly:
+            tk.Label(parent, text="Sin datos mensuales", fg=pal["subtext"],
+                     bg=panel_bg, font=_font(11)).pack(padx=16, pady=16)
+            return
+
+        chart_h = 150
+        n = len(monthly)
+        max_n = max((m["n"] for m in monthly), default=1) or 1
+
+        c = tk.Canvas(parent, bg=panel_bg, highlightthickness=0,
+                      height=chart_h + 30)
+        c.pack(fill="x", padx=16, pady=(0, 12))
+
+        def _draw(event=None):
+            c.delete("all")
+            w = c.winfo_width()
+            if w < 40:
+                return
+            gap = 10
+            bar_w = max(16, min(40, (w - gap * (n + 1)) // n))
+            total_w = bar_w * n + gap * (n - 1)
+            x0 = (w - total_w) // 2
+            bar_zone = chart_h - 30
+
+            for i, m in enumerate(monthly):
+                x = x0 + i * (bar_w + gap)
+                bar_h = int((m["n"] / max_n) * bar_zone) if max_n else 0
+                top = chart_h - 20 - bar_h
+                c.create_text(x + bar_w // 2, top - 10, text=str(m["n"]),
+                              fill=pal["subtext"], font=_font(10))
+                if bar_h > 0:
+                    c.create_rectangle(x, top, x + bar_w, chart_h - 20,
+                                       fill=pal["blue"], outline="", width=0)
+                if m["multas"] > 0 and m["n"] > 0:
+                    mh = int((m["multas"] / m["n"]) * bar_h)
+                    c.create_rectangle(x, chart_h - 20 - mh,
+                                       x + bar_w, chart_h - 20,
+                                       fill=pal["warn"], outline="", width=0)
+                c.create_text(x + bar_w // 2, chart_h - 8, text=m["label"],
+                              fill=pal["subtext"], font=_font(11))
+
+            ly = chart_h + 10
+            lx = x0
+            c.create_rectangle(lx, ly, lx + 10, ly + 10,
+                               fill=pal["blue"], outline="")
+            c.create_text(lx + 14, ly + 5, text="Oficios",
+                          fill=pal["subtext"], font=_font(11), anchor="w")
+            lx += 80
+            c.create_rectangle(lx, ly, lx + 10, ly + 10,
+                               fill=pal["warn"], outline="")
+            c.create_text(lx + 14, ly + 5, text="Con multa",
+                          fill=pal["subtext"], font=_font(11), anchor="w")
+
+        c.bind("<Configure>", _draw)
+
+    def _draw_tipos_list(self, parent, tipos) -> None:
+        pal = self.pal
+        panel_bg = pal["panel"]
+        if not tipos:
+            tk.Label(parent, text="Sin datos", fg=pal["subtext"],
+                     bg=panel_bg, font=_font(11)).pack(padx=16, pady=16)
+            return
+
+        container = _tframe(parent, panel_bg)
+        container.pack(fill="x", padx=16, pady=(0, 14))
+
+        for t in tipos:
+            row = _tframe(container, panel_bg)
+            row.pack(fill="x", pady=(0, 8))
+
+            top = _tframe(row, panel_bg)
+            top.pack(fill="x")
+            tk.Label(top, text=t["name"], fg=pal["text"], bg=panel_bg,
+                     font=_font(12), anchor="w").pack(side="left", fill="x",
+                                                       expand=True)
+            tk.Label(top, text=str(t["count"]), fg=pal["subtext"],
+                     bg=panel_bg, font=_mono(11), anchor="e",
+                     width=4).pack(side="left")
+            tk.Label(top, text=f"{t['pct']:.1f}%", fg=pal["subtext"],
+                     bg=panel_bg, font=_mono(11), anchor="e",
+                     width=6).pack(side="left")
+
+            bar_bg = tk.Frame(row, bg=pal["soft"], height=4)
+            bar_bg.pack(fill="x", pady=(4, 0))
+            bar_bg.pack_propagate(False)
+            pct = max(t["pct"], 0.5)
+            bar_fill = tk.Frame(bar_bg, bg=pal["blue"], height=4)
+            bar_fill.place(relwidth=pct / 100, relheight=1.0)
+
+    def _draw_donut_panel(self, parent, areas, total) -> None:
+        pal = self.pal
+        panel_bg = pal["panel"]
+        body = _tframe(parent, panel_bg)
+        body.pack(fill="x", padx=16, pady=(0, 16))
+
+        size = 150
+        r = 55
+        stroke = 22
+        cx, cy = size // 2, size // 2
+
+        c = tk.Canvas(body, width=size, height=size, bg=panel_bg,
+                      highlightthickness=0)
+        c.pack(side="left", padx=(0, 16))
+
+        x0, y0 = cx - r, cy - r
+        x1, y1 = cx + r, cy + r
+        c.create_arc(x0, y0, x1, y1, start=0, extent=359.99,
+                     style="arc", outline=pal["soft"], width=stroke)
+
+        start = 90.0
+        for a in areas:
+            extent = -(a["pct"] / 100.0) * 360.0
+            if abs(extent) > 0.3:
+                c.create_arc(x0, y0, x1, y1, start=start, extent=extent,
+                             style="arc", outline=pal[a["tone"]],
+                             width=stroke)
+            start += extent
+
+        c.create_text(cx, cy - 6, text=str(total), fill=pal["text"],
+                      font=_font(18, "bold"))
+        c.create_text(cx, cy + 12, text="oficios", fill=pal["subtext"],
+                      font=_font(10))
+
+        legend = _tframe(body, panel_bg)
+        legend.pack(side="left", fill="both", expand=True)
+
+        for a in areas:
+            row = _tframe(legend, panel_bg)
+            row.pack(fill="x", pady=2)
+            dot = tk.Canvas(row, width=9, height=9, bg=panel_bg,
+                            highlightthickness=0)
+            dot.pack(side="left", padx=(0, 8), pady=2)
+            dot.create_rectangle(0, 0, 9, 9, fill=pal[a["tone"]], outline="")
+            tk.Label(row, text=a["name"], fg=pal["text"], bg=panel_bg,
+                     font=_font(11), anchor="w").pack(side="left", fill="x",
+                                                       expand=True)
+            tk.Label(row, text=str(a["count"]), fg=pal["subtext"],
+                     bg=panel_bg, font=_mono(11), anchor="e",
+                     width=4).pack(side="left")
+            tk.Label(row, text=f"{a['pct']:.1f}%", fg=pal["subtext"],
+                     bg=panel_bg, font=_mono(11), anchor="e",
+                     width=5).pack(side="left")
+
+    def _draw_agent_panel(self, parent, data) -> None:
+        pal = self.pal
+        panel_bg = pal["panel"]
+        softer = pal["softer"]
+
+        mini_row = _tframe(parent, panel_bg)
+        mini_row.pack(fill="x", padx=16, pady=(0, 14))
+        for i in range(3):
+            mini_row.columnconfigure(i, weight=1, uniform="mini")
+
+        ministats = [
+            (data["accuracy"], "Clasificación correcta",
+             pal["success"] if data["accuracy"] != "—" else pal["text"]),
+            (str(data["correcciones"]), "Correcciones manuales",
+             pal["success"] if data["correcciones"] == 0 else pal["warn"]),
+            (str(data["total"]), "Oficios procesados", pal["text"]),
+        ]
+        for i, (v, l, color) in enumerate(ministats):
+            mf = tk.Frame(mini_row, bg=softer)
+            mf.grid(row=0, column=i,
+                    padx=(0 if i == 0 else 5, 0), sticky="nsew")
+            tk.Label(mf, text=v, fg=color, bg=softer,
+                     font=_font(18, "bold")).pack(anchor="w", padx=12,
+                                                   pady=(10, 0))
+            tk.Label(mf, text=l, fg=pal["subtext"], bg=softer,
+                     font=_font(10)).pack(anchor="w", padx=12, pady=(2, 10))
+
+        tk.Label(parent, text="ACTIVIDAD RECIENTE", fg=pal["subtext"],
+                 bg=panel_bg, font=_font(10),
+                 anchor="w").pack(anchor="w", padx=16, pady=(0, 8))
+
+        actividad = data.get("actividad", [])
+        if not actividad:
+            tk.Label(parent, text="Sin actividad registrada",
+                     fg=pal["dim"], bg=panel_bg,
+                     font=_font(11)).pack(anchor="w", padx=16, pady=(0, 14))
+        else:
+            for idx, a in enumerate(actividad):
+                af = _tframe(parent, panel_bg)
+                af.pack(fill="x", padx=16, pady=(0, 1))
+                if idx > 0:
+                    tk.Frame(af, bg=pal["border"], height=1).pack(
+                        fill="x", pady=(0, 6))
+                row = _tframe(af, panel_bg)
+                row.pack(fill="x")
+                tone = a.get("tone", "success")
+                dot_c = tk.Canvas(row, width=6, height=6, bg=panel_bg,
+                                  highlightthickness=0)
+                dot_c.pack(side="left", padx=(0, 8), pady=4)
+                dot_c.create_oval(0, 0, 6, 6, fill=pal.get(tone, pal["blue"]),
+                                  outline="")
+                tk.Label(row, text=a["msg"], fg=pal["text"], bg=panel_bg,
+                         font=_font(12), anchor="w").pack(side="left",
+                                                           fill="x", expand=True)
+                tk.Label(row, text=a.get("time", ""), fg=pal["subtext"],
+                         bg=panel_bg, font=_font(11),
+                         anchor="e").pack(side="right")
+            spacer = _tframe(parent, panel_bg)
+            spacer.pack(fill="x", pady=(0, 10))
 
     def _show_revaluar_placeholder(self) -> None:
         bg = self.pal["bg"]
