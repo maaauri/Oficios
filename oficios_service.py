@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -284,6 +285,7 @@ class Config:
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     informe_multa_api_key: str = ""
     informe_multa_model: str = "claude-sonnet-4-20250514"
+    db_path: Path = field(default_factory=lambda: Path("oficios.db"))
     informe_output_dir: Path = field(default_factory=lambda: Path("."))
     request_timeout_seconds: int = 180
     scan_extensions: tuple[str, ...] = (".pdf",)
@@ -323,9 +325,12 @@ def load_config(path: Path) -> Config:
     excel_parent = str(Path(raw["excel_path"]).parent)
     informe_output_dir = Path(informe_raw.get("output_dir", excel_parent))
 
+    excel_p = Path(raw["excel_path"])
+    db_p = Path(raw.get("db_path", str(excel_p.with_suffix(".db"))))
+
     return Config(
         watch_dir=Path(raw["watch_dir"]),
-        excel_path=Path(raw["excel_path"]),
+        excel_path=excel_p,
         processed_state_path=Path(raw.get("processed_state_path", "processed_state.json")),
         corrections_path=Path(raw.get("corrections_path", "corrections.json")),
         historial_path=Path(raw.get("historial_path", "historial_oficios.json")),
@@ -336,6 +341,7 @@ def load_config(path: Path) -> Config:
         openai_api_key=api_key,
         model=raw.get("model", "gpt-5.4-mini"),
         gerentes=gerentes,
+        db_path=db_p,
         planner=planner,
         informe_multa_api_key=informe_raw.get("api_key", ""),
         informe_multa_model=informe_raw.get("model", "claude-sonnet-4-20250514"),
@@ -710,6 +716,160 @@ def remove_duplicate_files(watch_dir: Path, extensions: tuple[str, ...]) -> int:
     if removed:
         logging.info("Se eliminaron %d copia(s) de archivos.", removed)
     return removed
+
+
+# ---------------------------------------------------------------------------
+# SQLite storage (primary data store; Excel kept as export)
+# ---------------------------------------------------------------------------
+
+_DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS oficios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nro TEXT NOT NULL,
+    categoria TEXT DEFAULT '',
+    fecha_oficio TEXT,
+    concepto TEXT DEFAULT '',
+    direccion TEXT DEFAULT 'Comercial y Servicio al Cliente',
+    gerencia TEXT DEFAULT '',
+    gerente TEXT DEFAULT '',
+    equipo TEXT DEFAULT '',
+    plazo_respuesta TEXT,
+    multa TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(nro, categoria, fecha_oficio)
+);
+CREATE INDEX IF NOT EXISTS idx_oficios_nro ON oficios(nro);
+CREATE INDEX IF NOT EXISTS idx_oficios_plazo ON oficios(plazo_respuesta);
+CREATE INDEX IF NOT EXISTS idx_oficios_gerencia ON oficios(gerencia);
+"""
+
+
+def init_db(db_path: Path) -> None:
+    ensure_parent(db_path)
+    con = sqlite3.connect(db_path)
+    con.executescript(_DB_SCHEMA)
+    con.close()
+
+
+def migrate_excel_to_db(excel_path: Path, db_path: Path) -> int:
+    """Import existing Excel rows into SQLite (skips duplicates). Returns count."""
+    if not excel_path.exists():
+        return 0
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute("SELECT COUNT(*) FROM oficios")
+    if cur.fetchone()[0] > 0:
+        con.close()
+        return 0
+
+    imported = 0
+    try:
+        wb = load_workbook(excel_path, read_only=True, data_only=True)
+        ws = wb.active
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            nro = str(row[0] or "").strip()
+            if not nro:
+                continue
+            fecha = row[2]
+            if hasattr(fecha, "date"):
+                fecha = fecha.date()
+            fecha_str = fecha.isoformat() if isinstance(fecha, date) else None
+            plazo = row[8]
+            if hasattr(plazo, "date"):
+                plazo = plazo.date()
+            plazo_str = plazo.isoformat() if isinstance(plazo, date) else None
+            try:
+                cur.execute(
+                    "INSERT OR IGNORE INTO oficios "
+                    "(nro,categoria,fecha_oficio,concepto,direccion,gerencia,gerente,equipo,plazo_respuesta,multa) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        nro,
+                        str(row[1] or ""),
+                        fecha_str,
+                        str(row[3] or ""),
+                        str(row[4] or "Comercial y Servicio al Cliente"),
+                        str(row[5] or ""),
+                        str(row[6] or ""),
+                        str(row[7] or ""),
+                        plazo_str,
+                        str(row[9] or ""),
+                    ),
+                )
+                imported += cur.rowcount
+            except sqlite3.Error:
+                pass
+        wb.close()
+        con.commit()
+    except Exception as exc:
+        logging.warning("Error migrando Excel a SQLite: %s", exc)
+    finally:
+        con.close()
+    if imported:
+        logging.info("Migrados %d oficios del Excel a SQLite.", imported)
+    return imported
+
+
+def db_insert_oficio(db_path: Path, row: List[Any]) -> bool:
+    """Insert a row into SQLite. Returns True if inserted (not duplicate)."""
+    fecha = row[2]
+    fecha_str = fecha.isoformat() if isinstance(fecha, date) else None
+    plazo = row[8]
+    plazo_str = plazo.isoformat() if isinstance(plazo, date) else None
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "INSERT OR IGNORE INTO oficios "
+            "(nro,categoria,fecha_oficio,concepto,direccion,gerencia,gerente,equipo,plazo_respuesta,multa) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(row[0] or ""),
+                str(row[1] or ""),
+                fecha_str,
+                str(row[3] or ""),
+                str(row[4] or "Comercial y Servicio al Cliente"),
+                str(row[5] or ""),
+                str(row[6] or ""),
+                str(row[7] or ""),
+                plazo_str,
+                str(row[9] or ""),
+            ),
+        )
+        con.commit()
+        return con.total_changes > 0
+    finally:
+        con.close()
+
+
+def db_update_oficio(db_path: Path, nro: str, categoria: str,
+                     updates: Dict[str, Any], gerentes: Dict[str, "Gerente"]) -> None:
+    """Update fields in SQLite for a given oficio."""
+    sets: List[str] = []
+    vals: List[Any] = []
+    if "gerencia_responsable" in updates:
+        new_area = updates["gerencia_responsable"]
+        sets.append("gerencia=?")
+        vals.append(new_area)
+        gerente = gerentes.get(new_area, Gerente(nombre=""))
+        sets.append("gerente=?")
+        vals.append(gerente.nombre)
+    if "plazo_respuesta" in updates:
+        p = parse_date_yyyy_mm_dd(updates["plazo_respuesta"])
+        sets.append("plazo_respuesta=?")
+        vals.append(p.isoformat() if p else None)
+    if "es_multa" in updates:
+        sets.append("multa=?")
+        vals.append("Sí" if updates["es_multa"] else "")
+    if not sets:
+        return
+    vals.extend([nro, categoria])
+    sql = f"UPDATE oficios SET {','.join(sets)} WHERE nro=? AND categoria=?"
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(sql, vals)
+        con.commit()
+    finally:
+        con.close()
 
 
 _VALID_PREFIXES = re.compile(r"^(OC|Ord\.|RE)\s", re.IGNORECASE)
@@ -1578,9 +1738,10 @@ def save_corrections(path: Path, corrections: List[Dict[str, Any]]) -> None:
         json.dump(corrections, f, ensure_ascii=False, indent=2)
 
 
-def update_excel_row(excel_path: Path, nro: str, categoria: str,
+def update_excel_row(excel_path: Path, db_path: Path, nro: str, categoria: str,
                      updates: Dict[str, Any], gerentes: Dict[str, Gerente]) -> None:
-    """Actualiza una fila existente en el Excel según Nro + Categoría."""
+    """Actualiza una fila existente en Excel y SQLite según Nro + Categoría."""
+    db_update_oficio(db_path, nro, categoria, updates, gerentes)
     wb = load_workbook(excel_path)
     ws = wb.active
     for row in ws.iter_rows(min_row=2):
@@ -1589,16 +1750,16 @@ def update_excel_row(excel_path: Path, nro: str, categoria: str,
         if cell_nro == nro and cell_cat == categoria:
             if "gerencia_responsable" in updates:
                 new_area = updates["gerencia_responsable"]
-                row[5].value = new_area  # col F = Gerencia Responsable
+                row[5].value = new_area
                 gerente = gerentes.get(new_area, Gerente(nombre=""))
-                row[6].value = gerente.nombre  # col G = Gerente Responsable
+                row[6].value = gerente.nombre
             if "plazo_respuesta" in updates:
                 p = parse_date_yyyy_mm_dd(updates["plazo_respuesta"])
                 if p:
-                    row[8].value = p  # col I = Plazo Respuesta
+                    row[8].value = p
                     row[8].number_format = "DD-MM-YYYY"
             if "es_multa" in updates:
-                row[9].value = "Sí" if updates["es_multa"] else ""  # col J = Multa
+                row[9].value = "Sí" if updates["es_multa"] else ""
             wb.save(excel_path)
             return
     wb.close()
@@ -1649,59 +1810,61 @@ FONT_MONO = "Consolas"
 # ---------------------------------------------------------------------------
 
 def load_oficios_for_display(config: Config) -> List[Dict[str, Any]]:
-    """Reads the Excel and returns a list of dicts for the Bandeja UI."""
+    """Reads oficios from SQLite and returns a list of dicts for the Bandeja UI."""
+    if not config.db_path.exists():
+        return []
     result: List[Dict[str, Any]] = []
-    if not config.excel_path.exists():
-        return result
+    corrections = load_corrections(config.corrections_path)
+    today = date.today()
+    con = sqlite3.connect(config.db_path)
     try:
-        wb = load_workbook(config.excel_path, read_only=True, data_only=True)
-        ws = wb.active
-        corrections = load_corrections(config.corrections_path)
-        today = date.today()
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            nro = str(row[0] or "").strip()
+        cur = con.execute(
+            "SELECT nro, categoria, fecha_oficio, concepto, gerencia, "
+            "plazo_respuesta FROM oficios ORDER BY id DESC"
+        )
+        for nro, categoria, fecha_iso, concepto, area, plazo_iso in cur:
+            nro = (nro or "").strip()
             if not nro:
                 continue
-            categoria = str(row[1] or "")
-            fecha_raw = row[2]
-            concepto = str(row[3] or "")
-            area = str(row[5] or "Sin área")
-            plazo_raw = row[8]
-            multa_cell = str(row[9] or "").strip().lower()
+            concepto = concepto or ""
+            area = area or "Sin área"
 
-            if hasattr(fecha_raw, "date"):
-                fecha_raw = fecha_raw.date()
-            fecha_str = fecha_raw.strftime("%d-%m-%Y") if isinstance(fecha_raw, date) else ""
+            if fecha_iso:
+                try:
+                    fd = date.fromisoformat(fecha_iso)
+                    fecha_str = fd.strftime("%d-%m-%Y")
+                except ValueError:
+                    fecha_str = ""
+            else:
+                fecha_str = ""
 
-            if hasattr(plazo_raw, "date"):
-                plazo_raw = plazo_raw.date()
-            if isinstance(plazo_raw, date):
-                plazo_str = plazo_raw.strftime("%d-%m-%Y")
-                dias_rest = (plazo_raw - today).days
+            if plazo_iso:
+                try:
+                    pd = date.fromisoformat(plazo_iso)
+                    plazo_str = pd.strftime("%d-%m-%Y")
+                    dias_rest = (pd - today).days
+                except ValueError:
+                    plazo_str = ""
+                    dias_rest = None
             else:
                 plazo_str = ""
                 dias_rest = None
 
-            es_multa = is_multa(nro, concepto, corrections)
-
-            # confianza from historial if available
-            conf = None
-            tipo_display = categoria
-
             result.append({
                 "nro": nro,
-                "tipo": tipo_display,
+                "tipo": categoria or "",
                 "area": area,
                 "plazo": plazo_str,
                 "diasRest": dias_rest,
                 "asunto": concepto,
-                "multa": es_multa,
-                "conf": conf,
+                "multa": is_multa(nro, concepto, corrections),
+                "conf": None,
                 "fecha": fecha_str,
             })
-        wb.close()
     except Exception as exc:
-        logging.warning("Error leyendo Excel para GUI: %s", exc)
+        logging.warning("Error leyendo SQLite para GUI: %s", exc)
+    finally:
+        con.close()
     return result
 
 
@@ -1728,35 +1891,33 @@ def get_bandeja_kpis(config: Config) -> Dict[str, Any]:
 # Processing helpers (thread-safe callbacks)
 # ---------------------------------------------------------------------------
 
-def get_upcoming_deadlines(excel_path: Path, days: int = 5) -> List[Dict[str, Any]]:
-    if not excel_path.exists():
+def get_upcoming_deadlines(db_path: Path, days: int = 5) -> List[Dict[str, Any]]:
+    if not db_path.exists():
         return []
     result: List[Dict[str, Any]] = []
     today = date.today()
+    limit = today + timedelta(days=days)
+    con = sqlite3.connect(db_path)
     try:
-        wb = load_workbook(excel_path, read_only=True, data_only=True)
-        ws = wb.active
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            nro = str(row[0] or "").strip()
-            if not nro:
-                continue
-            plazo = row[8]
-            if hasattr(plazo, "date"):
-                plazo = plazo.date()
-            if not isinstance(plazo, date):
-                continue
-            diff = (plazo - today).days
-            if 0 <= diff <= days:
-                result.append({
-                    "nro": nro,
-                    "categoria": str(row[1] or ""),
-                    "area": str(row[5] or ""),
-                    "plazo_str": plazo.strftime("%d-%m-%Y"),
-                    "dias": diff,
-                })
-        wb.close()
+        cur = con.execute(
+            "SELECT nro, categoria, gerencia, plazo_respuesta FROM oficios "
+            "WHERE plazo_respuesta IS NOT NULL AND plazo_respuesta >= ? AND plazo_respuesta <= ? "
+            "ORDER BY plazo_respuesta",
+            (today.isoformat(), limit.isoformat()),
+        )
+        for nro, cat, area, plazo_iso in cur:
+            pd = date.fromisoformat(plazo_iso)
+            result.append({
+                "nro": nro or "",
+                "categoria": cat or "",
+                "area": area or "",
+                "plazo_str": pd.strftime("%d-%m-%Y"),
+                "dias": (pd - today).days,
+            })
     except Exception:
         pass
+    finally:
+        con.close()
     return result
 
 
@@ -1766,6 +1927,8 @@ def process_directory(
     """Procesa los PDFs pendientes. Retorna (stats, lista_de_multas)."""
     empty_stats = ProcessingStats()
     ensure_excel_exists(config.excel_path)
+    init_db(config.db_path)
+    migrate_excel_to_db(config.excel_path, config.db_path)
     remove_duplicate_files(config.watch_dir, config.scan_extensions)
     processed_hashes: set[str] = set(state.get("processed_hashes", []))
     pending = find_pending_pdfs(config, processed_hashes)
@@ -1811,6 +1974,7 @@ def process_directory(
                 logging.info("Plazo relativo calculado: %s → %s", pdf_path.name, due_date)
             row = map_row(extracted, config.gerentes)
             append_to_excel(config.excel_path, row)
+            db_insert_oficio(config.db_path, row)
             if due_date:
                 sync_to_planner(config, extracted, due_date)
             stats.registrar(extracted)
@@ -2690,6 +2854,9 @@ class OficiosApp(ctk.CTk):
 # ---------------------------------------------------------------------------
 
 def launch_main_gui(config: Config) -> None:
+    ensure_excel_exists(config.excel_path)
+    init_db(config.db_path)
+    migrate_excel_to_db(config.excel_path, config.db_path)
     app = OficiosApp(config)
     app.mainloop()
 
